@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "cron_jobs_sha256": "707987a4a8689ca1fc3e6a94f77d2f092248eb41a2b9e3a14ab6420946097416",
+  "enabled_jobs_expected": 96,
+  "queue_order": "earliest_latest_start_then_scheduled_time",
+  "same_job_pending": "queue_all_non_durable_except_declared_durable_latest",
+  "durable_backlog_coalescing_job_ids": [
+    "job_business_module_live_check",
+    "job_business_readiness_snapshot",
+    "job_disk_cleanup_healthcheck",
+    "job_drive_case_sync_all_files",
+    "job_function_health_index",
+    "job_laf_condition_dedup_scan",
+    "job_laf_nightly_audit",
+    "job_laf_portal_new_files_scan",
+    "job_tailscale_funnel_healthcheck",
+    "job_worldmonitor_intel"
+  ],
+  "max_pending_occurrences_per_job": 256,
+  "max_workers": 4,
+  "lane_caps": {
+    "light": 2,
+    "batch": 2,
+    "maintenance": 2
+  },
+  "shared_caps": {
+    "heavy": {
+      "lanes": [
+        "batch",
+        "maintenance"
+      ],
+      "slots": 2
+    }
+  },
+  "batch_job_ids": [
+    "job_business_module_live_check",
+    "job_disk_cleanup_healthcheck",
+    "job_file_review_check",
+    "job_laf_condition_dedup_scan",
+    "job_laf_nightly_audit",
+    "job_laf_portal_new_files_scan",
+    "job_local_deep_queue_worker",
+    "job_market_briefing_script",
+    "job_obsidian_ingest",
+    "job_obsidian_vector_reindex_notes",
+    "job_obsidian_vector_reindex_wiki",
+    "job_omlx_switch_night",
+    "job_osc_events_refresh",
+    "job_osc_index_cases",
+    "job_osc_todo_governance",
+    "job_transcript_sync",
+    "job_weekend_bookmark",
+    "job_weekend_resummary",
+    "job_wiki_synthesizer"
+  ],
+  "phase_delay_seconds": {
+    "job_benchmark_pdf_bookmarker": 10800,
+    "job_benchmark_pdf_namer": 4800,
+    "job_business_module_live_check": 9000,
+    "job_disk_cleanup_healthcheck": 0,
+    "job_distill_train_gemma": 0,
+    "job_drive_case_sync_bidirectional": 3000,
+    "job_exam_tutor_yearly_sync": 19200,
+    "job_file_review_check": 0,
+    "job_legacy_judgment_resummary_quality": 5400,
+    "job_local_deep_queue_worker": 900,
+    "job_osc_index_cases": 3600,
+    "job_weekend_resummary": 2400,
+    "job_worldmonitor_intel": 7200
+  }
+}

@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://magi.local/contracts/v3/transcription-backends.schema.json",
+  "title": "MAGI V3 transcription backend manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "policy", "output_contract", "backends"],
+  "properties": {
+    "$schema": {"type": "string"},
+    "schema_version": {"const": 1},
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "primary_backend_id",
+        "secondary_backend_id",
+        "allowed_model_license_ids",
+        "unknown_backend_action",
+        "selection_fail_closed",
+        "model_auto_download_allowed",
+        "candidate_execution_scope",
+        "resource_policy",
+        "quality_claims_require_recorded_benchmark_evidence"
+      ],
+      "properties": {
+        "primary_backend_id": {"type": "string", "minLength": 1},
+        "secondary_backend_id": {"type": "string", "minLength": 1},
+        "allowed_model_license_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "unknown_backend_action": {"const": "reject"},
+        "selection_fail_closed": {"const": true},
+        "model_auto_download_allowed": {"const": false},
+        "candidate_execution_scope": {"const": "isolated_offline_only"},
+        "resource_policy": {"type": "string", "minLength": 1},
+        "quality_claims_require_recorded_benchmark_evidence": {"const": true}
+      }
+    },
+    "output_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_id",
+        "adapter_required",
+        "required_top_level_fields",
+        "required_segment_fields",
+        "validation_rules"
+      ],
+      "properties": {
+        "contract_id": {"const": "magi.transcript.v1"},
+        "adapter_required": {"const": true},
+        "required_top_level_fields": {
+          "type": "array",
+          "minItems": 7,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "required_segment_fields": {
+          "type": "array",
+          "minItems": 4,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "validation_rules": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "backends": {
+      "type": "array",
+      "minItems": 2,
+      "items": {"$ref": "#/$defs/backend"}
+    }
+  },
+  "$defs": {
+    "isolation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required", "network_access", "production_writes", "maximum_concurrent_heavy_workers"],
+      "properties": {
+        "required": {"type": "boolean"},
+        "network_access": {"const": false},
+        "production_writes": {"const": false},
+        "maximum_concurrent_heavy_workers": {"const": 1}
+      }
+    },
+    "modelAcquisition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["auto_download_allowed", "preinstalled_model_required", "missing_model_action"],
+      "properties": {
+        "auto_download_allowed": {"const": false},
+        "preinstalled_model_required": {"const": true},
+        "missing_model_action": {"const": "reject"}
+      }
+    },
+    "promotionGate": {
+      "type": "object",
+      "required": ["required", "status"],
+      "properties": {
+        "required": {"type": "boolean"},
+        "status": {"enum": ["existing_primary", "not_run", "failed", "passed"]}
+      }
+    },
+    "backend": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "role",
+        "enabled",
+        "selectable",
+        "fallback_allowed",
+        "execution_mode",
+        "implementation",
+        "isolation",
+        "model_acquisition",
+        "promotion_gate"
+      ],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+        "role": {"enum": ["primary", "secondary", "candidate"]},
+        "enabled": {"type": "boolean"},
+        "selectable": {"type": "boolean"},
+        "fallback_allowed": {"type": "boolean"},
+        "execution_mode": {"enum": ["managed_local", "isolated_offline_only"]},
+        "implementation": {"type": "object", "minProperties": 3},
+        "isolation": {"$ref": "#/$defs/isolation"},
+        "model_acquisition": {"$ref": "#/$defs/modelAcquisition"},
+        "current_output_contract": {"type": "object"},
+        "promotion_gate": {"$ref": "#/$defs/promotionGate"}
+      }
+    }
+  }
+}

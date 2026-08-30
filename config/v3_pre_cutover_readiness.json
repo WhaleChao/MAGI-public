@@ -1,0 +1,232 @@
+{
+  "schema_version": 1,
+  "audit_basis": "executable V3 source and tests; documentation claims are not evidence",
+  "replacement_ready": true,
+  "replacement_ready_scope": "production surface implementation and offline contract verification; isolated same-host live validation remains a separate hard cutover gate",
+  "replacement_ready_rule": "true only when every required surface has implemented=true, tested=true, and blocked=false",
+  "required_surface_ids": [
+    "production_http_5002",
+    "production_http_5003",
+    "production_http_8088",
+    "v2_route_handlers_347",
+    "login_and_session",
+    "callbacks_and_webhooks",
+    "sse_streaming",
+    "multipart_upload"
+  ],
+  "summary": {
+    "required": 8,
+    "implemented": 8,
+    "tested": 8,
+    "blocked": 0
+  },
+  "surfaces": [
+    {
+      "id": "production_http_5002",
+      "required": true,
+      "implemented": true,
+      "tested": true,
+      "blocked": false,
+      "status": "ready",
+      "live_validation_required": true,
+      "evidence": [
+        {
+          "file": "magi_v3/gateway.py",
+          "line": 339,
+          "anchor": "def create_waitress_server",
+          "kind": "source",
+          "finding": "The production Gateway creates the bounded Waitress listener declared for port 5002."
+        },
+        {
+          "file": "tests/v3/test_gateway.py",
+          "line": 750,
+          "anchor": "test_waitress_adapter_uses_bounded_production_settings_and_graceful_drain",
+          "kind": "test",
+          "finding": "The fixed production listener settings and graceful drain contract are exercised without taking the V2 port."
+        }
+      ]
+    },
+    {
+      "id": "production_http_5003",
+      "required": true,
+      "implemented": true,
+      "tested": true,
+      "blocked": false,
+      "status": "ready",
+      "live_validation_required": true,
+      "evidence": [
+        {
+          "file": "magi_v3/compat/gateway.py",
+          "line": 522,
+          "anchor": "def create_tools_app",
+          "kind": "source",
+          "finding": "The fixed V3 tools factory delegates to the exact V2-compatible 5003 application."
+        },
+        {
+          "file": "tests/v3/test_gateway.py",
+          "line": 692,
+          "anchor": "test_serve_loop_stops_both_listeners_when_control_owner_is_lost",
+          "kind": "test",
+          "finding": "The two-listener Gateway lifecycle and fail-closed shutdown are exercised together."
+        }
+      ]
+    },
+    {
+      "id": "production_http_8088",
+      "required": true,
+      "implemented": true,
+      "tested": true,
+      "blocked": false,
+      "status": "ready",
+      "live_validation_required": true,
+      "evidence": [
+        {
+          "file": "magi_v3/control.py",
+          "line": 351,
+          "anchor": "def main",
+          "kind": "source",
+          "finding": "The Control role is an executable production entry point and owns the fixed Website Admin listener."
+        },
+        {
+          "file": "tests/v3/test_service_entrypoints.py",
+          "line": 540,
+          "anchor": "test_control_owns_global_runtime_and_exposes_8088_health_ready_without_socket",
+          "kind": "test",
+          "finding": "The 8088 factory binding, lifecycle, ownership and health overlay are exercised."
+        }
+      ]
+    },
+    {
+      "id": "v2_route_handlers_347",
+      "required": true,
+      "implemented": true,
+      "tested": true,
+      "blocked": false,
+      "status": "ready",
+      "live_validation_required": true,
+      "evidence": [
+        {
+          "file": "magi_v3/compat/gateway.py",
+          "line": 26,
+          "anchor": "EXPECTED_COUNTS",
+          "kind": "source",
+          "finding": "Compatibility loading is pinned to 280 main plus 67 tools routes."
+        },
+        {
+          "file": "tests/v3/test_compat_gateway.py",
+          "line": 61,
+          "anchor": "total\": 347",
+          "kind": "test",
+          "finding": "The executable compatibility inventory is asserted at exactly 347 routes."
+        }
+      ]
+    },
+    {
+      "id": "login_and_session",
+      "required": true,
+      "implemented": true,
+      "tested": true,
+      "blocked": false,
+      "status": "ready",
+      "live_validation_required": true,
+      "evidence": [
+        {
+          "file": "magi_v3/compat/gateway.py",
+          "line": 516,
+          "anchor": "def create_main_app",
+          "kind": "source",
+          "finding": "The main compatibility application preserves the original WSGI request/session implementation."
+        },
+        {
+          "file": "tests/v3/test_compat_gateway.py",
+          "line": 142,
+          "anchor": "test_wsgi_passthrough_preserves_body_duplicate_headers_stream_upload_and_session",
+          "kind": "test",
+          "finding": "Login cookie creation and a subsequent authenticated session request are preserved through the V3 adapter."
+        }
+      ]
+    },
+    {
+      "id": "callbacks_and_webhooks",
+      "required": true,
+      "implemented": true,
+      "tested": true,
+      "blocked": false,
+      "status": "ready",
+      "live_validation_required": true,
+      "evidence": [
+        {
+          "file": "tests/v3/test_compat_gateway.py",
+          "line": 71,
+          "anchor": "/callback",
+          "kind": "test",
+          "finding": "OAuth callback and LINE/Telegram webhook routes are present in the pinned executable surface."
+        },
+        {
+          "file": "tests/v3/test_compat_gateway.py",
+          "line": 142,
+          "anchor": "test_wsgi_passthrough_preserves_body_duplicate_headers_stream_upload_and_session",
+          "kind": "test",
+          "finding": "Callback request bytes, signature header, status, body and duplicate response headers are preserved."
+        }
+      ]
+    },
+    {
+      "id": "sse_streaming",
+      "required": true,
+      "implemented": true,
+      "tested": true,
+      "blocked": false,
+      "status": "ready",
+      "live_validation_required": true,
+      "evidence": [
+        {
+          "file": "magi_v3/compat/gateway.py",
+          "line": 516,
+          "anchor": "def create_main_app",
+          "kind": "source",
+          "finding": "The lazy WSGI compatibility factory forwards iterable streaming responses unchanged."
+        },
+        {
+          "file": "tests/v3/test_compat_gateway.py",
+          "line": 142,
+          "anchor": "test_wsgi_passthrough_preserves_body_duplicate_headers_stream_upload_and_session",
+          "kind": "test",
+          "finding": "SSE content type, chunk ordering and final DONE marker are asserted through the production adapter."
+        }
+      ]
+    },
+    {
+      "id": "multipart_upload",
+      "required": true,
+      "implemented": true,
+      "tested": true,
+      "blocked": false,
+      "status": "ready",
+      "live_validation_required": true,
+      "evidence": [
+        {
+          "file": "magi_v3/compat/gateway.py",
+          "line": 522,
+          "anchor": "def create_tools_app",
+          "kind": "source",
+          "finding": "The tools compatibility app preserves the original multipart WSGI request parser."
+        },
+        {
+          "file": "tests/v3/test_compat_gateway.py",
+          "line": 142,
+          "anchor": "test_wsgi_passthrough_preserves_body_duplicate_headers_stream_upload_and_session",
+          "kind": "test",
+          "finding": "Multipart filename, media type and binary body are asserted byte-for-byte through the V3 adapter."
+        },
+        {
+          "file": "tests/v3/test_service_entrypoints.py",
+          "line": 647,
+          "anchor": "test_admin_overlay_preserves_legacy_session_multipart_and_mutable_data_roots",
+          "kind": "test",
+          "finding": "The 8088 administration upload parser and mutable website data roots are also preserved."
+        }
+      ]
+    }
+  ]
+}

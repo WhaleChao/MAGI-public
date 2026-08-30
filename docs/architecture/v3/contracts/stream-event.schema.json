@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://magi.local/schemas/v3/stream-event.schema.json",
+  "title": "MAGI V3 Ordered Stream Event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "correlation_id", "seq", "event", "created_at", "payload"],
+  "properties": {
+    "schema_version": {"const": "3.0"},
+    "correlation_id": {"type": "string", "minLength": 1},
+    "seq": {"type": "integer", "minimum": 0},
+    "event": {
+      "enum": ["accepted", "queued", "plan", "progress", "tool_started", "tool_finished", "token", "artifact", "quality", "completed", "failed"]
+    },
+    "created_at": {"type": "string", "format": "date-time"},
+    "payload": {"type": "object"}
+  }
+}

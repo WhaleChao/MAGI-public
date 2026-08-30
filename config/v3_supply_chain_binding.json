@@ -1,0 +1,33 @@
+{
+  "schema": "magi.supply-chain-binding/v1",
+  "runtime_strategy": "immutable_base_plus_hashed_offline_overlay",
+  "packages_sha256": "716b4e92621bcde269bd186a14cde99560f888367ec8dcb627fec717d11f84c4",
+  "base_runtime": {
+    "runtime_id": "runtime-v3-20260825-rc643-melchior50",
+    "manifest_sha256": "5f0e6be4914d95197a14da6a993f4390edd6cc3cbbe90d7b7dedce514405b635",
+    "tree_sha256": "57df7057f9b959ef08cb563b36ddbb4be36ca3f06dd7c4666e1b863cfc85b349"
+  },
+  "artifacts": {
+    "runtime_lock": {
+      "path": "config/supply-chain/rc643-r64/python-runtime-lock.json",
+      "sha256": "96d85ea1b9ef87ce844d8039062e7fbb71fbdb6ba99a427d5d1e6c8743c63326",
+      "size": 72892
+    },
+    "sbom": {
+      "path": "config/supply-chain/rc643-r64/sbom.cdx.json",
+      "sha256": "39ce8c06ee600168796f12ac3c8c386b8ca370741aaa7c96312ea815cc9716a6",
+      "size": 436631
+    },
+    "wheelhouse_manifest": {
+      "path": "config/supply-chain/rc643-r64/wheelhouse-manifest.json",
+      "sha256": "4404c9080227f27d2c16cbf0483675920ed04a151ed886d74d46c9b81c3e6296",
+      "size": 4532
+    },
+    "vulnerability_receipt": {
+      "path": "config/supply-chain/rc643-r64/vulnerability-receipt.json",
+      "sha256": "992d5541163695b60217cc503b24fcf4e47e7d3fb89009f7340d65ccb987f4d7",
+      "size": 337
+    }
+  },
+  "binding_sha256": "8a43f52d4968cf67e05654e8880dda999688f94f79f02641b4f0adf7e2820612"
+}

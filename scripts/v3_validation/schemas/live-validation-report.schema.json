@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://magi.local/schemas/v3/live-validation-report.schema.json",
+  "title": "MAGI V3 isolated live validation report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "report_id",
+    "plan_id",
+    "plan_sha256",
+    "started_at",
+    "finished_at",
+    "status",
+    "production_touched",
+    "environment_attestation",
+    "summary",
+    "checks",
+    "unproven_gaps"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "report_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{2,127}$"},
+    "plan_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{2,127}$"},
+    "plan_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "started_at": {"type": "string", "format": "date-time"},
+    "finished_at": {"type": "string", "format": "date-time"},
+    "status": {"enum": ["passed", "failed", "blocked", "incomplete"]},
+    "production_touched": {"const": false},
+    "environment_attestation": {"$ref": "#/$defs/safe_environment"},
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["total", "passed", "failed", "blocked", "skipped"],
+      "properties": {
+        "total": {"type": "integer", "minimum": 0},
+        "passed": {"type": "integer", "minimum": 0},
+        "failed": {"type": "integer", "minimum": 0},
+        "blocked": {"type": "integer", "minimum": 0},
+        "skipped": {"type": "integer", "minimum": 0}
+      }
+    },
+    "checks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["check_id", "status", "duration_ms", "evidence", "error"],
+        "properties": {
+          "check_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{2,127}$"},
+          "status": {"enum": ["passed", "failed", "blocked", "skipped"]},
+          "duration_ms": {"type": "integer", "minimum": 0},
+          "evidence": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {"type": "string", "minLength": 1, "maxLength": 1000}
+          },
+          "error": {"type": ["string", "null"], "maxLength": 4000}
+        }
+      }
+    },
+    "unproven_gaps": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1, "maxLength": 1000}
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"const": "passed"}}, "required": ["status"]},
+      "then": {"properties": {"unproven_gaps": {"maxItems": 0}}}
+    }
+  ],
+  "$defs": {
+    "safe_environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ports",
+        "production_services_started",
+        "external_ingress_enabled",
+        "writers_enabled",
+        "scheduler_enabled",
+        "webhook_consumers_enabled",
+        "model_switch_enabled",
+        "production_db_allowed",
+        "nas_allowed",
+        "channel_delivery_allowed"
+      ],
+      "properties": {
+        "ports": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["main", "tools", "admin"],
+          "properties": {
+            "main": {"const": 5102},
+            "tools": {"const": 5103},
+            "admin": {"const": 8188}
+          }
+        },
+        "production_services_started": {"const": false},
+        "external_ingress_enabled": {"const": false},
+        "writers_enabled": {"const": false},
+        "scheduler_enabled": {"const": false},
+        "webhook_consumers_enabled": {"const": false},
+        "model_switch_enabled": {"const": false},
+        "production_db_allowed": {"const": false},
+        "nas_allowed": {"const": false},
+        "channel_delivery_allowed": {"const": false}
+      }
+    }
+  }
+}

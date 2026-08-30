@@ -1,0 +1,273 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://magi.local/schemas/v3/job-envelope.schema.json",
+  "title": "MAGI V3 Job Envelope",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "job_id",
+    "capability",
+    "operation",
+    "worker_class",
+    "side_effect_class",
+    "priority_class",
+    "status",
+    "created_at",
+    "scheduled_for",
+    "latest_start_at",
+    "deadline_at",
+    "not_before",
+    "attempt",
+    "max_attempts",
+    "timeout_sec",
+    "queue_ttl_sec",
+    "preemptible",
+    "resource_claim",
+    "commit_phase",
+    "input",
+    "business_completed",
+    "artifacts",
+    "side_effect_receipts",
+    "metrics"
+  ],
+  "properties": {
+    "schema_version": {"const": "3.0"},
+    "job_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "parent_job_id": {"type": ["string", "null"], "maxLength": 128},
+    "correlation_id": {"type": ["string", "null"], "maxLength": 128},
+    "session_id": {"type": ["string", "null"], "maxLength": 128},
+    "context_snapshot_id": {"type": ["string", "null"], "maxLength": 128},
+    "plan_id": {"type": ["string", "null"], "maxLength": 128},
+    "plan_revision": {"type": ["integer", "null"], "minimum": 1},
+    "step_id": {"type": ["string", "null"], "maxLength": 128},
+    "depends_on": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "idempotency_key": {"type": ["string", "null"], "maxLength": 256},
+    "capability": {"type": "string", "minLength": 1, "maxLength": 128},
+    "operation": {"type": "string", "minLength": 1, "maxLength": 128},
+    "generation": {"type": "integer", "minimum": 1, "default": 1},
+    "actor": {"type": "object"},
+    "side_effect_class": {
+      "enum": ["none", "read_only", "local_draft", "reversible_write", "external_commit", "destructive"]
+    },
+    "confirmation": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["required", "reason"],
+      "properties": {
+        "required": {"type": "boolean"},
+        "reason": {"type": "string", "maxLength": 1000},
+        "prompt": {"type": ["string", "null"], "maxLength": 2000},
+        "token": {"type": ["string", "null"], "maxLength": 256},
+        "expires_at": {"type": ["string", "null"], "format": "date-time"}
+      }
+    },
+    "worker_class": {
+      "enum": ["light", "browser", "document", "transcription", "integration", "model", "maintenance"]
+    },
+    "priority_class": {"enum": ["P0", "P1", "P2", "P3", "P4"]},
+    "lane": {"type": ["string", "null"], "maxLength": 128},
+    "lock_domain": {"type": ["string", "null"], "maxLength": 128},
+    "status": {
+      "enum": [
+        "queued",
+        "leased",
+        "running",
+        "waiting_children",
+        "awaiting_input",
+        "needs_confirmation",
+        "succeeded",
+        "degraded",
+        "failed",
+        "deferred",
+        "skipped",
+        "cancelled",
+        "timed_out"
+      ]
+    },
+    "created_at": {"type": "string", "format": "date-time"},
+    "scheduled_for": {"type": "string", "format": "date-time"},
+    "latest_start_at": {"type": "string", "format": "date-time"},
+    "deadline_at": {"type": "string", "format": "date-time"},
+    "not_before": {"type": "string", "format": "date-time"},
+    "next_attempt_at": {"type": ["string", "null"], "format": "date-time"},
+    "started_at": {"type": ["string", "null"], "format": "date-time"},
+    "heartbeat_at": {"type": ["string", "null"], "format": "date-time"},
+    "finished_at": {"type": ["string", "null"], "format": "date-time"},
+    "lease_expires_at": {"type": ["string", "null"], "format": "date-time"},
+    "attempt": {"type": "integer", "minimum": 0},
+    "max_attempts": {"type": "integer", "minimum": 1},
+    "timeout_sec": {"type": "integer", "minimum": 1, "maximum": 86400},
+    "queue_ttl_sec": {"type": "integer", "minimum": 1, "maximum": 604800},
+    "coalesce_key": {"type": ["string", "null"], "maxLength": 256},
+    "preemptible": {"type": "boolean"},
+    "checkpoint_ref": {"type": ["string", "null"], "maxLength": 4096},
+    "retry_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["strategy", "base_seconds", "max_seconds", "jitter_ratio"],
+      "properties": {
+        "strategy": {"enum": ["none", "fixed", "exponential"]},
+        "base_seconds": {"type": "integer", "minimum": 0},
+        "max_seconds": {"type": "integer", "minimum": 0},
+        "jitter_ratio": {"type": "number", "minimum": 0, "maximum": 1},
+        "respect_retry_after": {"type": "boolean", "default": true}
+      }
+    },
+    "resource_claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["memory_mb", "metal_mb", "cpu_percent", "disk_io", "nas_io", "network", "browser_tokens"],
+      "properties": {
+        "memory_mb": {"type": "integer", "minimum": 0},
+        "metal_mb": {"type": "integer", "minimum": 0},
+        "cpu_percent": {"type": "integer", "minimum": 0, "maximum": 1000},
+        "disk_io": {"enum": ["none", "light", "heavy"]},
+        "nas_io": {"enum": ["none", "light", "heavy"]},
+        "network": {"enum": ["none", "light", "heavy"]},
+        "browser_tokens": {"type": "integer", "minimum": 0, "maximum": 1}
+      }
+    },
+    "commit_phase": {"enum": ["not_applicable", "prepared", "committing", "committed", "ambiguous", "verified"]},
+    "ambiguous_side_effect": {"type": "boolean", "default": false},
+    "retryable": {"type": "boolean", "default": false},
+    "business_completed": {"type": "boolean", "default": false},
+    "reason_code": {"type": ["string", "null"], "maxLength": 128},
+    "input": {"type": "object"},
+    "result": {},
+    "tool_calls": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["tool", "version", "input_hash", "status"],
+        "properties": {
+          "tool": {"type": "string"},
+          "version": {"type": "string"},
+          "input_hash": {"type": "string"},
+          "status": {"enum": ["queued", "running", "succeeded", "failed", "skipped", "cancelled"]},
+          "duration_ms": {"type": ["integer", "null"], "minimum": 0},
+          "verification": {"type": ["object", "null"]},
+          "receipt": {"type": ["object", "null"]}
+        }
+      }
+    },
+    "child_job_ids": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "notification_outbox_ids": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "error": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "properties": {
+        "code": {"type": "string", "maxLength": 128},
+        "message": {"type": "string", "maxLength": 4000},
+        "detail": {"type": "object"}
+      },
+      "required": ["code", "message"]
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "uri"],
+        "properties": {
+          "kind": {"type": "string", "maxLength": 64},
+          "uri": {"type": "string", "maxLength": 4096},
+          "sha256": {"type": ["string", "null"], "pattern": "^[a-fA-F0-9]{64}$"},
+          "size_bytes": {"type": ["integer", "null"], "minimum": 0}
+        }
+      }
+    },
+    "side_effect_receipts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "reference", "committed_at"],
+        "properties": {
+          "kind": {"type": "string", "maxLength": 64},
+          "reference": {"type": "string", "maxLength": 512},
+          "committed_at": {"type": "string", "format": "date-time"},
+          "idempotency_key": {"type": ["string", "null"], "maxLength": 256},
+          "trace_id": {"type": ["string", "null"], "pattern": "^[0-9a-f]{32}$"}
+        }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "duration_ms": {"type": "integer", "minimum": 0},
+        "queue_ms": {"type": "integer", "minimum": 0},
+        "worker_start_ms": {"type": "integer", "minimum": 0},
+        "model_load_ms": {"type": "integer", "minimum": 0},
+        "ttft_ms": {"type": "integer", "minimum": 0},
+        "generation_ms": {"type": "integer", "minimum": 0},
+        "peak_rss_mb": {"type": "number", "minimum": 0},
+        "peak_footprint_mb": {"type": "number", "minimum": 0},
+        "process_group_peak_footprint_mb": {"type": "number", "minimum": 0},
+        "peak_metal_mb": {"type": "number", "minimum": 0},
+        "swapout_delta_mb": {"type": "number", "minimum": 0},
+        "compressor_delta_mb": {"type": "number"},
+        "cpu_seconds": {"type": "number", "minimum": 0},
+        "child_process_peak": {"type": "integer", "minimum": 0},
+        "child_reap_ms": {"type": "integer", "minimum": 0},
+        "page_faults": {"type": "integer", "minimum": 0},
+        "disk_read_bytes": {"type": "integer", "minimum": 0},
+        "disk_write_bytes": {"type": "integer", "minimum": 0},
+        "input_bytes": {"type": "integer", "minimum": 0},
+        "output_bytes": {"type": "integer", "minimum": 0},
+        "input_tokens": {"type": "integer", "minimum": 0},
+        "output_tokens": {"type": "integer", "minimum": 0},
+        "tokens_per_second": {"type": "number", "minimum": 0},
+        "provider": {"type": ["string", "null"]},
+        "model": {"type": ["string", "null"]}
+      }
+    },
+    "compatibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "v2_job_id": {"type": ["string", "null"]},
+        "v2_status": {"type": ["string", "null"]},
+        "v2_result_shape": {"type": ["string", "null"]}
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"enum": ["failed", "timed_out"]}}},
+      "then": {"required": ["error"]}
+    },
+    {
+      "if": {"properties": {"status": {"enum": ["succeeded", "degraded", "failed", "deferred", "skipped", "cancelled", "timed_out"]}}},
+      "then": {"required": ["finished_at"]}
+    },
+    {
+      "if": {"properties": {"status": {"const": "succeeded"}}},
+      "then": {"properties": {"business_completed": {"const": true}}}
+    },
+    {
+      "if": {
+        "properties": {
+          "side_effect_class": {"enum": ["reversible_write", "external_commit", "destructive"]}
+        }
+      },
+      "then": {
+        "required": ["idempotency_key"],
+        "properties": {"idempotency_key": {"type": "string", "minLength": 1}}
+      }
+    },
+    {
+      "if": {"properties": {"side_effect_class": {"enum": ["external_commit", "destructive"]}}},
+      "then": {
+        "required": ["confirmation"],
+        "properties": {
+          "confirmation": {
+            "type": "object",
+            "properties": {"required": {"const": true}}
+          }
+        }
+      }
+    }
+  ]
+}

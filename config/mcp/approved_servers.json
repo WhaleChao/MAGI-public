@@ -1,0 +1,10 @@
+{
+  "schema": "magi.mcp-client-catalog/v1",
+  "policy": {
+    "default": "deny",
+    "runtime_install": false,
+    "version_pin_required": true,
+    "digest_pin_required": true
+  },
+  "servers": []
+}

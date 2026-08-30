@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://magi.local/schemas/v3/api-envelope.schema.json",
+  "title": "MAGI V3 Canonical API Envelope",
+  "description": "Internal V3 contract. The V2 compatibility edge must translate this back to every legacy HTTP/body/SSE/plaintext shape.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["ok", "data", "error", "meta"],
+  "properties": {
+    "ok": {"type": "boolean"},
+    "data": {},
+    "error": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["code", "message", "retryable", "details"],
+      "properties": {
+        "code": {"type": "string", "maxLength": 128},
+        "message": {"type": "string", "maxLength": 4000},
+        "retryable": {"type": "boolean"},
+        "details": {"type": "object"}
+      }
+    },
+    "meta": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["request_id", "compat_version"],
+      "properties": {
+        "request_id": {"type": "string", "minLength": 1},
+        "compat_version": {"enum": ["v2", "v3"]},
+        "route": {"type": ["string", "null"]},
+        "model": {"type": ["string", "null"]},
+        "degraded": {"type": "boolean", "default": false},
+        "queued": {"type": "boolean", "default": false},
+        "job_id": {"type": ["string", "null"]}
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"ok": {"const": false}}},
+      "then": {"properties": {"error": {"type": "object"}}}
+    }
+  ]
+}

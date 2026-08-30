@@ -1,0 +1,139 @@
+{
+  "schema_version": 1,
+  "timezone": "Asia/Taipei",
+  "window": {
+    "start": "02:00",
+    "end": "04:00"
+  },
+  "conditional_daytime_window": {
+    "starts_at": "2026-07-27T09:00:00+08:00",
+    "ends_at": "2026-07-27T18:00:00+08:00",
+    "timezone": "Asia/Taipei"
+  },
+  "conditional_daytime_authorization_required": true,
+  "source_contract": {
+    "schema_version": 3,
+    "contract_id": "magi.v3.current-release-and-shared-state/v1",
+    "root_kind": "sealed_v3_release_plus_shared_mutable_state",
+    "legacy_v2_validation": "disabled"
+  },
+  "v3_rotation_drill": {
+    "schema_version": 1,
+    "required_cold_rollback_runs": 3,
+    "production_active_marker_mode": "read_only"
+  },
+  "maintenance_blackout": {
+    "start": "01:30",
+    "heavy_start_cutoff": "01:45",
+    "end": "04:15",
+    "blocked_priorities": ["P2", "P3", "P4"],
+    "catchup_policy": "latest_read_only_staggered",
+    "portal_write_and_destructive_catchup": false
+  },
+  "baseline": {
+    "runtime_routes": 347,
+    "main_routes": 280,
+    "tools_routes": 67,
+    "active_skills": 51,
+    "versioned_skill_artifacts": 15,
+    "cron_jobs": 106,
+    "enabled_cron_jobs": 96,
+    "installed_launchagent_roles": 26
+  },
+  "promotion_thresholds": {
+    "unmapped_interfaces": 0,
+    "failed_required_tests": 0,
+    "unapproved_contract_diffs": 0,
+    "duplicate_side_effects": 0,
+    "unresolved_dual_writers": 0,
+    "unapproved_source_runtime_drift": 0,
+    "pre_cutover_validation_window_hours": 24,
+    "offline_replay_consecutive_days": 1,
+    "offline_replay_independent_passes": 1,
+    "minimum_isolated_live_validation_runs": 1,
+    "max_p95_regression_ratio": 0.05,
+    "minimum_application_plane_footprint_reduction_ratio": 0.25,
+    "gateway_added_p95_ms": 5,
+    "gateway_added_p99_ms": 10,
+    "minimum_model_tokens_per_second_ratio": 0.95,
+    "maximum_idle_swapout_growth_mb": 0,
+    "p0_p1_deadline_misses": 0,
+    "minimum_p2_deadline_success_ratio": 0.99,
+    "p3_backlog_drain_hours": 24,
+    "p1_browser_queue_p95_seconds": 120,
+    "unbounded_queue_growth": 0,
+    "unreconciled_ambiguous_commits": 0,
+    "rollback_rto_seconds": 120,
+    "lost_committed_jobs": 0,
+    "duplicate_committed_jobs": 0
+  },
+  "required_evidence": [
+    "portable_source_inventory_current",
+    "runtime_route_inventory_current",
+    "v3_unit_contract_integration_e2e_passed",
+    "interaction_agent_kernel_memory_quality_contracts_passed",
+    "context_memory_tool_plan_answer_golden_sets_passed",
+    "golden_side_effect_diff_approved",
+    "health_1000_probes_loaded_zero_models",
+    "seven_day_schedule_10x_arrival_2x_duration_replay_passed",
+    "hundred_cycle_worker_reap_soak_passed",
+    "sqlite_wal_disk_full_fsync_faults_passed",
+    "notification_storm_and_dlq_faults_passed",
+    "rendered_launchagent_manifest_checksums_saved",
+    "atomic_release_switch_and_cold_rollback_drill_passed",
+    "human_go_approval_recorded"
+  ],
+  "disk_capacity_policy": {
+    "schema_version": 1,
+    "absolute_floor_gib": 16,
+    "operational_headroom_gib": 8,
+    "material_multiplier": 4,
+    "material_scope": [
+      "candidate_release",
+      "prepared_deployment"
+    ]
+  },
+  "automatic_no_go": [
+    "outside_cutover_window",
+    "any_required_evidence_missing",
+    "any_required_test_failed",
+    "runtime_route_or_capability_inventory_mismatch",
+    "v3_quality_contract_failed",
+    "schedule_capacity_or_deadline_replay_failed",
+    "maintenance_blackout_not_active",
+    "heavy_job_running_at_cutover",
+    "disk_free_below_release_bound_capacity_floor",
+    "uncommitted_or_unreconciled_outbox_entries",
+    "unreconciled_ambiguous_commit",
+    "more_than_one_writer_or_scheduler_owner",
+    "database_or_nas_not_ready",
+    "previous_v3_release_owner_not_released",
+    "current_v3_or_previous_v3_rollback_artifact_not_ready",
+    "critical_memory_pressure",
+    "shared_state_snapshot_not_ready"
+  ],
+  "automatic_rollback": [
+    "v3_readiness_failed",
+    "authentication_or_webhook_contract_failed",
+    "data_integrity_diff_detected",
+    "duplicate_external_side_effect_detected",
+    "queue_or_lease_recovery_failed",
+    "critical_capability_smoke_failed",
+    "critical_memory_pressure_persisted",
+    "current_v3_health_failed_after_controlled_restart"
+  ],
+  "post_cutover": {
+    "previous_v3_mode": "cold_rollback_artifact_stopped",
+    "legacy_v2_validation": "disabled",
+    "observation_days": 7,
+    "retire_only_when_final_reconciliation_clean": true,
+    "preserve_previous_v3_release_and_state_snapshot": true,
+    "rollback_sequence": [
+      "stop_v3_completely",
+      "verify_v3_ports_leases_writers_and_schedulers_released",
+      "atomically_restore_previous_v3_release_pointer_and_compatible_state",
+      "start_previous_v3_once",
+      "run_previous_v3_readiness_and_integrity_smoke"
+    ]
+  }
+}

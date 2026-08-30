@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://magi.local/schemas/v3/answer-envelope.schema.json",
+  "title": "MAGI V3 Answer Envelope",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "answer_id", "request_id", "session_id", "correlation_id", "status", "text", "used_context_ids", "citations", "tool_calls", "quality", "route", "metrics"],
+  "properties": {
+    "schema_version": {"const": "3.0"},
+    "answer_id": {"type": "string", "minLength": 1},
+    "request_id": {"type": "string", "minLength": 1},
+    "session_id": {"type": "string", "minLength": 1},
+    "correlation_id": {"type": "string", "minLength": 1},
+    "status": {"enum": ["succeeded", "degraded", "failed", "awaiting_input", "awaiting_confirmation"]},
+    "text": {"type": "string"},
+    "html": {"type": ["string", "null"]},
+    "artifacts": {"type": "array", "items": {"type": "object"}},
+    "used_context_ids": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "memory_provenance": {"type": "array", "items": {"type": "object"}},
+    "citations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["source_id", "claim_ids"],
+        "properties": {
+          "source_id": {"type": "string"},
+          "uri": {"type": ["string", "null"]},
+          "claim_ids": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    "tool_calls": {"type": "array", "items": {"type": "object"}},
+    "quality": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "kind", "issues", "gate_version", "source_coverage"],
+      "properties": {
+        "status": {"enum": ["passed", "failed", "review_required", "not_applicable"]},
+        "kind": {"type": "string"},
+        "issues": {"type": "array", "items": {"type": "string"}},
+        "gate_version": {"type": "string"},
+        "reviewer": {"type": ["string", "null"]},
+        "source_coverage": {"type": "number", "minimum": 0, "maximum": 1}
+      }
+    },
+    "route": {
+      "type": "object",
+      "required": ["path", "intent", "risk", "model"],
+      "properties": {
+        "path": {"enum": ["P0", "P1", "P2", "P3", "P4"]},
+        "intent": {"type": "string"},
+        "risk": {"enum": ["low", "medium", "high", "critical"]},
+        "model": {"type": ["string", "null"]},
+        "blocked_reasons": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "metrics": {"type": "object"}
+  }
+}

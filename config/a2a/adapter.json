@@ -1,0 +1,8 @@
+{
+  "schema": "magi.a2a-adapter/v1",
+  "enabled": false,
+  "mode": "proposal-only",
+  "writer_access": false,
+  "federation_enabled": false,
+  "allowed_remote_hosts": []
+}

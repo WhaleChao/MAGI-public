@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "strategy": "strangler_adapters_no_big_bang_rewrite",
+  "public_contract_policy": "Existing web routes, OSC paths, legal workflows, receipts and scheduler identities remain stable while implementation is extracted behind adapters.",
+  "boundaries": [
+    {
+      "id": "agent_kernel",
+      "owner": "magi_v3",
+      "source_roots": [
+        "magi_v3/evidence_ledger.py",
+        "magi_v3/telemetry.py",
+        "magi_v3/span_evaluation.py",
+        "magi_v3/skill_manifest.py",
+        "magi_v3/skill_sandbox.py"
+      ],
+      "may_write_business_state": false
+    },
+    {
+      "id": "legal_domains",
+      "owner": "legal_workflows",
+      "source_roots": [
+        "api/laf_case_classifier.py",
+        "api/osc/case_folder_schema.py",
+        "api/osc/drive_case_sync.py",
+        "casper_ecosystem/law_firm_orchestrators"
+      ],
+      "may_write_business_state": true
+    },
+    {
+      "id": "external_connectors",
+      "owner": "connectors",
+      "source_roots": [
+        "api/agentic/mcp_http.py",
+        "magi_v3/external_canary.py",
+        "magi_v3/mcp_catalog.py",
+        "magi_v3/mcp_conformance.py"
+      ],
+      "may_write_business_state": false
+    },
+    {
+      "id": "release_ops",
+      "owner": "release_engineering",
+      "source_roots": [
+        "magi_v3/supply_chain.py",
+        "scripts/packaging/supply_chain_gate.py",
+        "scripts/v3_validation/validation_router.py"
+      ],
+      "may_write_business_state": false
+    }
+  ],
+  "legacy_facades": [
+    {
+      "path": "api/blueprints/osc_cases.py",
+      "stable_surface": "OSC routes and path contracts"
+    },
+    {
+      "path": "casper_ecosystem/law_firm_orchestrators/file_review_automation.py",
+      "stable_surface": "court file-review workflow"
+    },
+    {
+      "path": "casper_ecosystem/law_firm_orchestrators/laf_orchestrator.py",
+      "stable_surface": "legal-aid workflow"
+    }
+  ],
+  "extraction_rules": {
+    "new_cross_domain_logic_in_legacy_facade_forbidden": true,
+    "route_or_receipt_change_requires_golden_regression": true,
+    "production_writer_requires_single_owner": true,
+    "large_scale_rewrite_during_rc643_forbidden": true
+  }
+}
