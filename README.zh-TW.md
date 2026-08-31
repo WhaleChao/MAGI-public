@@ -16,7 +16,10 @@ English: [README.md](README.md)
 
 ## 現行驗證版本
 
-- **公開產品版號：** MAGI RC643／R75（2026-08-31 驗證）。
+- **公開產品版號：** MAGI RC643／R75（2026-09-01 驗證）。
+- **最新驗證不可變 package：**
+  `v3-20260831-rc643-r75-hotfix7-r1-docs2`；`docs2` 僅是文件稽核後綴，
+  不會改變公開 R75 產品版號。
 - **維修文件版次：** RC643／R75；本分支提供 HTML、PDF、Markdown 與
   machine-readable 原始碼索引。
 - **線上維修百科：** 登入後開啟 `/manual`；內容由不可變 active release 提供，

@@ -19,7 +19,10 @@ Traditional Chinese: [README.zh-TW.md](README.zh-TW.md)
 
 ## Current verified release
 
-- **Public product label:** MAGI RC643 / R75 (verified 2026-08-31).
+- **Public product label:** MAGI RC643 / R75 (verified 2026-09-01).
+- **Latest verified immutable package:**
+  `v3-20260831-rc643-r75-hotfix7-r1-docs2`; `docs2` is a documentation-only
+  audit suffix and does not change the public R75 product label.
 - **Maintenance documentation revision:** RC643/R75, with HTML, PDF, Markdown,
   and a machine-readable source index on this branch.
 - **Live manual:** authenticated `/manual`, served from the immutable active
