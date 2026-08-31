@@ -1,26 +1,24 @@
 {
   "schema": "magi.source-index.v1",
   "release_id": "v3-20260831-rc643-r75-hotfix7-r1",
-  "source_commit": "29222c40cd5f898f27670c13feb4c134c751bdb3",
+  "source_commit": "a58db40d7675fe654782d297c3c070407fb89727",
   "release_manifest_sha256": "96ab97392dfbdbf46cb895e92c0db725d80ef53202ad5568dad65bdf76cd7829",
   "formal_chain_sha256": "b6f29aeda6062654317231c2bbb73ee6d382bbaecd2bc88f84e51d3cfb89dbb6",
   "release_status": "active_production",
   "generated_at": "2026-08-31",
   "root_is_repository_relative": true,
   "summary": {
-    "files": 2004,
-    "python_files": 1394,
-    "symbols": 23437,
+    "files": 1997,
+    "python_files": 1393,
+    "symbols": 23435,
     "routes": 361,
     "categories": {
       ".github": 2,
       "api": 229,
-      "bin": 2,
       "configuration": 43,
-      "data": 1,
       "documentation": 26,
       "gui": 1,
-      "integrations": 10,
+      "integrations": 6,
       "json": 5,
       "legal_aid_legacy_adapter": 13,
       "migrations": 2,
@@ -41450,55 +41448,6 @@
       ]
     },
     {
-      "path": "bin/agent_mcp.py",
-      "category": "bin",
-      "extension": ".py",
-      "bytes": 3397,
-      "lines": 87,
-      "sha256": "88d57283888b92fbdd930a1bd0aa4af8f827acfdee74290ed019c296d65f9d3c",
-      "imports": [
-        "__future__",
-        "api.agentic.mcp_gateway",
-        "api.agentic.mcp_http",
-        "argparse",
-        "dataclasses",
-        "os",
-        "pathlib",
-        "sys",
-        "uvicorn"
-      ],
-      "parse_error": "",
-      "symbols": [
-        {
-          "qualname": "_config_from_args",
-          "kind": "function",
-          "line": 28,
-          "end_line": 35,
-          "signature": "_config_from_args(args: argparse.Namespace)",
-          "summary": ""
-        },
-        {
-          "qualname": "main",
-          "kind": "function",
-          "line": 38,
-          "end_line": 83,
-          "signature": "main(argv: list[str] | None=None)",
-          "summary": ""
-        }
-      ]
-    },
-    {
-      "path": "bin/magi-v3-python",
-      "category": "bin",
-      "extension": "[none]",
-      "bytes": 22304,
-      "lines": 526,
-      "sha256": "2dd2efd98b4f02ba08d5b97def89852746c393284c8a37d17ef6d5f7bd7d6851",
-      "imports": [],
-      "parse_error": "",
-      "symbols": []
-    },
-    {
       "path": "casper_ecosystem/law_firm_orchestrators/file_review_automation.py",
       "category": "legal_aid_legacy_adapter",
       "extension": ".py",
@@ -51911,17 +51860,6 @@
       ]
     },
     {
-      "path": "data/templates/D_supplement.docx",
-      "category": "data",
-      "extension": ".docx",
-      "bytes": 24227,
-      "lines": 84,
-      "sha256": "4d0f7147ecec7bb44648186e25213326714ba35011ecb658cdb8be96c9b037f9",
-      "imports": [],
-      "parse_error": "",
-      "symbols": []
-    },
-    {
       "path": "docs/SELFHOST_DEPLOYMENT.md",
       "category": "documentation",
       "extension": ".md",
@@ -54753,50 +54691,6 @@
           "summary": ""
         }
       ]
-    },
-    {
-      "path": "integrations/debt_robot/document/A.docx",
-      "category": "integrations",
-      "extension": ".docx",
-      "bytes": 19455,
-      "lines": 80,
-      "sha256": "e9d4cdafc57350c54a5ff39397ede7a6bb56db828cac579a56b905ab7a43ca82",
-      "imports": [],
-      "parse_error": "",
-      "symbols": []
-    },
-    {
-      "path": "integrations/debt_robot/document/B.docx",
-      "category": "integrations",
-      "extension": ".docx",
-      "bytes": 20143,
-      "lines": 77,
-      "sha256": "a960b5986eb4329ef9d36f949ddd6f2627eac78702e4eeed45c26ebf8b192ba0",
-      "imports": [],
-      "parse_error": "",
-      "symbols": []
-    },
-    {
-      "path": "integrations/debt_robot/document/C.docx",
-      "category": "integrations",
-      "extension": ".docx",
-      "bytes": 14263,
-      "lines": 46,
-      "sha256": "676e272005ba506561f316f3c98fbbec7210c98bd25144b199a84c9baf8add4e",
-      "imports": [],
-      "parse_error": "",
-      "symbols": []
-    },
-    {
-      "path": "integrations/debt_robot/document/D.docx",
-      "category": "integrations",
-      "extension": ".docx",
-      "bytes": 24227,
-      "lines": 84,
-      "sha256": "29f777ae54e2c57059c04cdddaca2398dabccc48af409e859613b4bf1bfdd9b2",
-      "imports": [],
-      "parse_error": "",
-      "symbols": []
     },
     {
       "path": "json/datastores.json",
@@ -67499,9 +67393,9 @@
       "path": "scripts/docs/build_magi_encyclopedia.py",
       "category": "operations",
       "extension": ".py",
-      "bytes": 112038,
+      "bytes": 112118,
       "lines": 1404,
-      "sha256": "383fb533d8d6aee6fd49f4bd5428aa115a39e726352083e350d6e04c91d682a9",
+      "sha256": "bd4117196b5bc2d39810c1e5ef8c9d7389c50740d94c93c2fa5cdb0c4b07e1a1",
       "imports": [
         "__future__",
         "argparse",
