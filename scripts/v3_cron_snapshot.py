@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
+from scripts.ops.omlx_profile_policy import DAY_SWITCH_CRON, NIGHT_SWITCH_CRON
+
 
 class CronSnapshotBlocked(ValueError):
     """The source schedule cannot be safely rebound to one V3 release."""
@@ -31,6 +33,10 @@ _RUNTIME_FIELDS = {
 _PYTHON_NAME = re.compile(r"^python(?:3(?:\.\d+)?)?$")
 _CODE_TOP_LEVEL = frozenset({"api", "casper_ecosystem", "config", "gui", "scripts", "skills"})
 _ENV_ASSIGNMENT = re.compile(r"^(?P<name>[A-Z][A-Z0-9_]*)=(?P<value>/.*)$")
+_MODEL_PROFILE_CRON = {
+    "job_omlx_switch_day": DAY_SWITCH_CRON,
+    "job_omlx_switch_night": NIGHT_SWITCH_CRON,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -240,6 +246,11 @@ def render_snapshot(
         command = str(job.get("command") or "").strip()
         if not job_id or job_id in ids or not command:
             raise CronSnapshotBlocked(f"cron job {index} has an invalid id or command")
+        expected_profile_cron = _MODEL_PROFILE_CRON.get(job_id)
+        if expected_profile_cron is not None and str(job.get("cron") or "") != expected_profile_cron:
+            raise CronSnapshotBlocked(
+                f"cron job {job_id} conflicts with the V3 model profile policy"
+            )
         ids.add(job_id)
         if command.startswith("@MAGI"):
             macro_jobs += 1

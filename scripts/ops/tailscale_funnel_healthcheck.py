@@ -19,6 +19,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 from urllib.error import URLError
 from pathlib import Path
@@ -26,8 +27,13 @@ from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse
 from urllib.request import Request, urlopen
 
-
 ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from magi_v3.external_canary import load_from_environment as _load_offhost_canary
+
+
 RUNTIME_DIR = Path(os.environ.get("MAGI_RUNTIME_DIR", "").strip() or ROOT / ".runtime").expanduser()
 STATE_PATH = RUNTIME_DIR / "tailscale_funnel_health_latest.json"
 MOBILE_ENTRY_PATH = "/mobile-app"
@@ -1110,7 +1116,7 @@ def _check_schedule_fixture(*, apply: bool) -> dict[str, Any]:
     return payload
 
 
-def check(apply: bool = False) -> dict[str, Any]:
+def _check_host_vantage(apply: bool = False) -> dict[str, Any]:
     _load_dotenv()
     if _schedule_fixture_enabled():
         return _check_schedule_fixture(apply=apply)
@@ -1451,6 +1457,68 @@ def check(apply: bool = False) -> dict[str, Any]:
             else "repair did not restore public Funnel or mobile entry"
         )
     _add_repair_guidance(payload, targets)
+    return payload
+
+
+def _offhost_canary_required() -> bool:
+    configured = str(os.environ.get("MAGI_REQUIRE_OFFHOST_CANARY") or "").strip().lower()
+    if configured:
+        return configured in {"1", "true", "yes", "on"}
+    return bool(str(os.environ.get("MAGI_V3_RELEASE_MANIFEST") or "").strip())
+
+
+def check(apply: bool = False) -> dict[str, Any]:
+    """Combine host diagnostics with an independent signed external receipt.
+
+    Host DNS, pinned-edge and canonical-route checks remain valuable repair
+    evidence, but a sealed production release cannot turn them into an
+    off-host availability claim by itself.
+    """
+    payload = _check_host_vantage(apply=apply)
+    if payload.get("fixture") is True:
+        payload["external_canary"] = {
+            "ok": None,
+            "off_host": False,
+            "skipped": True,
+            "reason_code": "offline_schedule_fixture",
+        }
+        payload["availability_claim"] = "offline_contract_fixture_only"
+        return payload
+
+    targets = payload.get("targets") if isinstance(payload.get("targets"), list) else []
+    host = ""
+    if targets and isinstance(targets[0], dict):
+        host = str(targets[0].get("host") or "").strip().rstrip(".")
+    if not host:
+        configured = _public_health_url()
+        host = str(urlparse(configured).hostname or "") if configured else ""
+    external = (
+        _load_offhost_canary(expected_host=host)
+        if host
+        else {"ok": False, "off_host": False, "reason_code": "off_host_target_missing"}
+    )
+    payload["external_canary"] = external
+    payload["host_vantage"] = {
+        "off_host": False,
+        "claim": "host_to_public_edge_or_tailnet_diagnostic",
+    }
+
+    if external.get("ok") is True:
+        payload["availability_claim"] = "externally_verified_public_availability"
+        return payload
+
+    payload["availability_claim"] = "host_to_edge_only"
+    if _offhost_canary_required() and payload.get("status") in {"ok", "recovered", "degraded"}:
+        previous_status = str(payload.get("status") or "")
+        previous_reason = str(payload.get("reason") or "")
+        payload["host_vantage_status"] = previous_status
+        payload["host_vantage_reason"] = previous_reason
+        payload["status"] = "degraded"
+        payload["reason"] = "host-to-edge diagnostics passed, but fresh signed off-host DNS/TLS/HTTP evidence is unavailable"
+        _append_unique(
+            payload["next_actions"],
+            "Run the independent non-Tailnet canary and publish its signed receipt; local checks cannot declare external availability.",
+        )
     return payload
 
 

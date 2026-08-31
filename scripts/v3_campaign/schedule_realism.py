@@ -653,6 +653,7 @@ def _execute_allowlisted_body(
         "NO_PROXY": "*",
         "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
         "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONPYCACHEPREFIX": "/dev/null",
         "PYTHONNOUSERSITE": "1",
         "TMPDIR": str(temp_dir),
     }

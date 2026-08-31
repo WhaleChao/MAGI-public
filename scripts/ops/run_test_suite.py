@@ -128,7 +128,11 @@ def should_skip(check: dict[str, Any]) -> tuple[bool, str]:
     return False, ""
 
 
-def tail(text: str, limit: int = 4000) -> str:
+def tail(text: str | bytes | None, limit: int = 4000) -> str:
+    if text is None:
+        return ""
+    if isinstance(text, bytes):
+        text = text.decode("utf-8", errors="replace")
     if len(text) <= limit:
         return text
     return text[-limit:]

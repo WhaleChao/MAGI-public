@@ -1403,6 +1403,7 @@ environment["MAGI_CODE_DIR"] = environment["MAGI_ORCH_DIR"]
 environment["MAGI_V3_RELEASE_ID"] = str(marker["release_id"])
 environment["MAGI_V3_PYTHON_RUNTIME"] = str(Path(sys.executable).resolve())
 environment["PYTHONDONTWRITEBYTECODE"] = "1"
+environment["PYTHONPYCACHEPREFIX"] = os.devnull
 environment["PYTHONNOUSERSITE"] = "1"
 environment["PYTHONPATH"] = str(root) + (
     os.pathsep + os.environ["PYTHONPATH"] if os.environ.get("PYTHONPATH") else ""

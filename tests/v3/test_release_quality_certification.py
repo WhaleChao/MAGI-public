@@ -416,7 +416,7 @@ def test_manifest_requires_v2_disabled_and_selects_only_v3_paths() -> None:
     assert v3_paths == ["tests/v3/test_core_health.py"]
 
 
-def test_v3_formal_pytest_routes_pdf_index_to_its_isolated_shared_state(
+def test_v3_formal_pytest_routes_all_named_state_to_its_isolated_shared_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -444,6 +444,10 @@ def test_v3_formal_pytest_routes_pdf_index_to_its_isolated_shared_state(
 
     monkeypatch.setenv(certification.SEATBELT_CHILD_ENV, "1")
     monkeypatch.setenv("MAGI_PDF_NAMER_CASE_INDEX", "/production/must-not-leak.json")
+    monkeypatch.setenv(
+        "MAGI_PAYMENT_PROOF_REGISTRY_PATH",
+        "/production/payment-proof-must-not-leak.json",
+    )
     monkeypatch.setattr(certification.subprocess, "run", capture)
     binding = certification.RuntimeBinding(
         True,
@@ -469,9 +473,11 @@ def test_v3_formal_pytest_routes_pdf_index_to_its_isolated_shared_state(
     assert isinstance(environment, dict)
     shared = workspace / "v3-test-state" / "shared"
     assert environment["MAGI_V3_SHARED_STATE_DIR"] == str(shared)
-    assert environment["MAGI_PDF_NAMER_CASE_INDEX"] == str(
-        shared / "pdf-namer" / "_case_index.json"
-    )
+    for env_name, (_binding_name, relative) in (
+        certification.NAMED_MUTABLE_STATE_BINDINGS.items()
+    ):
+        assert environment[env_name] == str(shared / relative)
+        assert "/production/" not in environment[env_name]
     assert Path(environment["MAGI_PDF_NAMER_CASE_INDEX"]).parent.is_dir()
 
 
@@ -590,6 +596,12 @@ def test_campaign_entrypoint_reexecs_complete_producer_under_seatbelt(
         Path(str(env[name])).is_relative_to(producer_state)
         for name in certification.FORMAL_PRODUCER_STATE_PATHS
     )
+    shared = producer_state / "shared"
+    assert all(
+        env[env_name] == str(shared / relative)
+        for env_name, (_binding_name, relative) in
+        certification.NAMED_MUTABLE_STATE_BINDINGS.items()
+    )
     assert not producer_state.exists()
     assert capsys.readouterr().out.strip().startswith(certification.EVIDENCE_PREFIX)
 
@@ -657,7 +669,7 @@ def test_campaign_entrypoint_reports_sanitized_child_error(
     assert "private diagnostic details" not in json.dumps(report)
 
 
-def test_seven_inner_reports_compile_and_gate_all_five_quality_chains(
+def test_release_quality_reports_compile_and_gate_all_five_quality_chains(
     tmp_path: Path,
 ) -> None:
     release, release_sha = campaign_fixtures.create_release(tmp_path, armed=True)
@@ -715,12 +727,13 @@ def test_seven_inner_reports_compile_and_gate_all_five_quality_chains(
     assert all(
         evidence_id in decision["passed"] for evidence_id in QUALITY_GATE_IDS
     ), decision["invalid"]
+    expected_reports = int(report["required_independent_passes"])
     for evidence_id in QUALITY_GATE_IDS:
         producer = json.loads((output / f"reports/{evidence_id}.json").read_text())
         assert sum(
             row["role"] == "upstream_release_quality_report"
             for row in producer["source_artifacts"]
-        ) == 7
+        ) == expected_reports
         assert producer["campaign_id"] == context.campaign_id
         assert producer["release_sha"] == context.release_sha
         assert producer["hardware_id"] == context.hardware_id

@@ -132,6 +132,22 @@ def _already_synced_in_target(cursor, record: dict) -> bool:
     return cursor.fetchone() is not None
 
 
+def _memory_is_tombstoned(record: dict) -> bool:
+    """Prevent an offline backup row from resurrecting deleted Agent memory."""
+
+    try:
+        from magi_v3.memory_lifecycle import MemoryLifecycleStore
+
+        return MemoryLifecycleStore.from_env().is_tombstoned(
+            str(record.get("source") or ""),
+            str(record.get("content") or ""),
+        )
+    except Exception:
+        # Lifecycle health is reported separately; preserving the existing
+        # durable queue is safer than dropping a row on an unavailable sidecar.
+        return False
+
+
 def sync_to_keeper():
     """
     Sync pending records from SQLite backup to Keeper.
@@ -158,6 +174,11 @@ def sync_to_keeper():
             try:
                 content = record['content']
                 source = str(record['source'] or "")
+
+                if _memory_is_tombstoned(record):
+                    synced_ids.append(record['id'])
+                    logger.info("Skipped tombstoned memory during Keeper sync (local id=%s)", record['id'])
+                    continue
 
                 # Idempotency first: avoid duplicate reinsertion.
                 if _already_synced_in_target(cursor, record):

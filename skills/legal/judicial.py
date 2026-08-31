@@ -43,7 +43,11 @@ if str(_MAGI_ROOT) not in sys.path:
 
 from api.runtime_paths import ensure_orch_on_sys_path
 from api.case_path_mapper import translate_case_path_to_local
-from skills.engine.legal_web_adapter import format_legal_web_engine_log, resolve_legal_web_engine
+from skills.engine.legal_web_adapter import (
+    format_legal_web_engine_log,
+    preinstalled_selenium_driver_kwargs,
+    resolve_legal_web_engine,
+)
 
 # =============================================================================
 # MAGI Safe FS (禁止刪除 Synology Drive / 重要資料)
@@ -497,7 +501,6 @@ class LawyerSSO:
         if self.headless:
             options.add_argument('--headless=new')
 
-        options.add_argument('--no-sandbox')
         options.add_argument('--disable-dev-shm-usage')
         options.add_argument('--disable-gpu')
         options.add_argument('--window-size=1920,1080')
@@ -515,7 +518,10 @@ class LawyerSSO:
         }
         options.add_experimental_option("prefs", prefs)
         
-        self.driver = webdriver.Chrome(options=options)
+        self.driver = webdriver.Chrome(
+            options=options,
+            **preinstalled_selenium_driver_kwargs("chrome"),
+        )
         
         # 隱藏 webdriver 特徵
         self.driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
@@ -866,7 +872,6 @@ class CourtRecordDownloader:
             options.add_experimental_option("excludeSwitches", ["enable-automation"])
             options.add_experimental_option('useAutomationExtension', False)
             
-            options.add_argument('--no-sandbox')
             options.add_argument('--disable-dev-shm-usage')
             options.add_argument('--disable-gpu')
             options.add_argument('--window-size=1280,800')
@@ -880,7 +885,10 @@ class CourtRecordDownloader:
             }
             options.add_experimental_option("prefs", prefs)
             
-            self.driver = webdriver.Chrome(options=options)
+            self.driver = webdriver.Chrome(
+                options=options,
+                **preinstalled_selenium_driver_kwargs("chrome"),
+            )
             
             # 反爬蟲：移除 webdriver 屬性
             self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")

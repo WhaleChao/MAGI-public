@@ -29,8 +29,10 @@ from scripts.v3_cron_snapshot import CronSnapshotBlocked, render_snapshot
 from scripts.v3_python_runtime_snapshot import PythonRuntimeBlocked, build_runtime_manifest
 from scripts.v3_static_external_staging import (
     RECEIPT_NAME as STATIC_EXTERNAL_RECEIPT_NAME,
+    RELEASE_BINDING_RECEIPT_NAME as STATIC_EXTERNAL_RELEASE_RECEIPT_NAME,
     StaticExternalStagingError,
-    verify_static_external,
+    render_static_external_release_binding,
+    verify_static_external_payload,
 )
 from magi_v3.errors import ConfigurationError
 from magi_v3.external_inputs import (
@@ -283,6 +285,9 @@ class ExternalRuntimeInputs:
     python_runtime: Path
     python_runtime_realpath: Path
     python_runtime_sha256: str
+    chromedriver_path: Path | None
+    chromedriver_sha256: str | None
+    chromedriver_mode: str | None
     cron_jobs_source_file: Path
     cron_jobs_source_sha256: str
     cron_snapshot_evidence: Mapping[str, Any]
@@ -317,6 +322,9 @@ class ExternalRuntimeInputs:
 class StaticExternalEvidence:
     receipt: Path
     receipt_sha256: str
+    receipt_bytes: bytes
+    payload_receipt: Path
+    payload_receipt_sha256: str
     source_snapshot_sha256: str
     target_snapshot_sha256: str
 
@@ -446,8 +454,10 @@ def _run_bounded_runtime_probe(python_runtime: Path) -> bytes:
                     "-p",
                     profile,
                     str(python_runtime),
-                    "-I",
                     "-B",
+                    "-X",
+                    "pycache_prefix=/dev/null",
+                    "-I",
                     "-c",
                     _RUNTIME_MODULE_PROBE,
                 ]
@@ -462,6 +472,7 @@ def _run_bounded_runtime_probe(python_runtime: Path) -> bytes:
                         "LC_ALL": "C",
                         "PATH": "/usr/bin:/bin",
                         "PYTHONDONTWRITEBYTECODE": "1",
+                        "PYTHONPYCACHEPREFIX": "/dev/null",
                         "PYTHONNOUSERSITE": "1",
                         "TMPDIR": str(temporary_root),
                     },
@@ -794,6 +805,7 @@ def _validate_external_runtime_inputs(
     drive_sync_token_file: Path | None,
     drive_sync_write_token_file: Path | None,
     nas_ocr_queue_db_path: Path | None,
+    chromedriver_path: Path | None,
 ) -> ExternalRuntimeInputs:
     raw_env = env_file or Path(os.environ.get("MAGI_ENV_FILE", ""))
     raw_cron = cron_jobs_file or Path(os.environ.get("MAGI_CRON_JOBS_FILE", ""))
@@ -832,6 +844,10 @@ def _validate_external_runtime_inputs(
     raw_ocr_queue = nas_ocr_queue_db_path or Path(
         os.environ.get("MAGI_NAS_OCR_QUEUE_DB_PATH", "")
     )
+    chromedriver_env = os.environ.get("MAGI_CHROMEDRIVER_PATH", "").strip()
+    raw_chromedriver = chromedriver_path or (
+        Path(chromedriver_env) if chromedriver_env else None
+    )
     if not str(raw_env) or not raw_env.expanduser().is_absolute() or raw_env.expanduser().is_symlink():
         raise DeployPrepareBlocked("external MAGI env file must be an absolute non-symlink path")
     if not str(raw_website) or not raw_website.expanduser().is_absolute() or raw_website.expanduser().is_symlink():
@@ -859,6 +875,13 @@ def _validate_external_runtime_inputs(
     ):
         if not str(raw) or not raw.expanduser().is_absolute() or raw.expanduser().is_symlink():
             raise DeployPrepareBlocked(f"external {name} must be an absolute non-symlink path")
+    if raw_chromedriver is not None and (
+        not raw_chromedriver.expanduser().is_absolute()
+        or raw_chromedriver.expanduser().is_symlink()
+    ):
+        raise DeployPrepareBlocked(
+            "external ChromeDriver must be an absolute non-symlink path"
+        )
     try:
         secret = raw_env.expanduser().resolve(strict=True)
         cron_jobs = raw_cron.expanduser().resolve(strict=True)
@@ -880,6 +903,11 @@ def _validate_external_runtime_inputs(
         drive_sync_token = raw_drive_sync_token.expanduser().resolve(strict=True)
         drive_sync_write_token = raw_drive_sync_write_token.expanduser().resolve(strict=True)
         ocr_queue = raw_ocr_queue.expanduser().resolve(strict=True)
+        chromedriver = (
+            raw_chromedriver.expanduser().resolve(strict=True)
+            if raw_chromedriver is not None
+            else None
+        )
     except OSError as exc:
         raise DeployPrepareBlocked(f"external runtime input is missing: {exc}") from exc
     if (
@@ -897,6 +925,10 @@ def _validate_external_runtime_inputs(
         or not drive_sync_token.is_file()
         or not drive_sync_write_token.is_file()
         or not ocr_queue.is_file()
+        or (
+            chromedriver is not None
+            and (not chromedriver.is_file() or not os.access(chromedriver, os.X_OK))
+        )
     ):
         raise DeployPrepareBlocked("external runtime inputs have invalid types")
     for name, resolved, raw in (
@@ -913,6 +945,14 @@ def _validate_external_runtime_inputs(
     ):
         if resolved != raw.expanduser():
             raise DeployPrepareBlocked(f"external {name} must be canonical and non-symlinked")
+    if (
+        chromedriver is not None
+        and raw_chromedriver is not None
+        and chromedriver != raw_chromedriver.expanduser()
+    ):
+        raise DeployPrepareBlocked(
+            "external ChromeDriver must be canonical and non-symlinked"
+        )
     if (
         gmail_compose_token is not None
         and raw_gmail_compose_token is not None
@@ -980,6 +1020,15 @@ def _validate_external_runtime_inputs(
         python_runtime=python_declared,
         python_runtime_realpath=python_realpath,
         python_runtime_sha256=_sha256_file(python_realpath),
+        chromedriver_path=chromedriver,
+        chromedriver_sha256=(
+            _sha256_file(chromedriver) if chromedriver is not None else None
+        ),
+        chromedriver_mode=(
+            f"{stat.S_IMODE(chromedriver.stat().st_mode):04o}"
+            if chromedriver is not None
+            else None
+        ),
         cron_jobs_source_file=cron_jobs,
         cron_jobs_source_sha256=_sha256_file(cron_jobs),
         cron_snapshot_evidence={},
@@ -1465,6 +1514,7 @@ def _validate_production_static_external(
     *,
     identity: ReleaseIdentity,
     runtime_root: Path,
+    deployment_root: Path,
     external_inputs: ExternalRuntimeInputs,
 ) -> StaticExternalEvidence:
     raw = static_external_receipt or Path(
@@ -1481,9 +1531,7 @@ def _validate_production_static_external(
             "production static external receipt must use the canonical V3 shared target"
         )
     try:
-        report = verify_static_external(
-            identity.manifest_path,
-            expected_release_manifest_sha256=identity.manifest_sha256,
+        report = verify_static_external_payload(
             target_root=expected_root,
         )
     except StaticExternalStagingError as exc:
@@ -1530,10 +1578,27 @@ def _validate_production_static_external(
         for key, expected_hash in expected_content_hashes.items()
     ):
         raise DeployPrepareBlocked("production static external file hash binding mismatch")
-    receipt = expected_receipt.resolve(strict=True)
+    payload_receipt = expected_receipt.resolve(strict=True)
+    release_receipt = (
+        deployment_root / "runtime-inputs" / STATIC_EXTERNAL_RELEASE_RECEIPT_NAME
+    )
+    try:
+        receipt_bytes, binding = render_static_external_release_binding(
+            identity.manifest_path,
+            expected_release_manifest_sha256=identity.manifest_sha256,
+            target_root=expected_root,
+            binding_receipt=release_receipt,
+        )
+    except StaticExternalStagingError as exc:
+        raise DeployPrepareBlocked(
+            f"production static external release binding is invalid: {exc}"
+        ) from exc
     return StaticExternalEvidence(
-        receipt=receipt,
-        receipt_sha256=str(report["receipt_sha256"]),
+        receipt=release_receipt,
+        receipt_sha256=str(binding["binding_receipt_sha256"]),
+        receipt_bytes=receipt_bytes,
+        payload_receipt=payload_receipt,
+        payload_receipt_sha256=str(report["receipt_sha256"]),
         source_snapshot_sha256=str(report["source_snapshot_sha256"]),
         target_snapshot_sha256=str(report["target_snapshot_sha256"]),
     )
@@ -1885,6 +1950,13 @@ def _role_binding(
         "python_runtime": str(external_inputs.python_runtime),
         "python_runtime_realpath": str(external_inputs.python_runtime_realpath),
         "python_runtime_sha256": external_inputs.python_runtime_sha256,
+        "chromedriver_path": (
+            str(external_inputs.chromedriver_path)
+            if external_inputs.chromedriver_path is not None
+            else None
+        ),
+        "chromedriver_sha256": external_inputs.chromedriver_sha256,
+        "chromedriver_mode": external_inputs.chromedriver_mode,
         "python_runtime_manifest": str(python_runtime_manifest),
         "python_runtime_manifest_sha256": python_runtime_manifest_sha256,
         "python_runtime_tree_sha256": python_runtime_tree_sha256,
@@ -1976,6 +2048,8 @@ def _plist(binding: Mapping[str, Any]) -> bytes:
         "MAGI_V3_PYTHON_RUNTIME_MANIFEST": binding["python_runtime_manifest"],
         "MAGI_V3_PYTHON_RUNTIME_MANIFEST_SHA256": binding["python_runtime_manifest_sha256"],
         "MAGI_V3_PYTHON_RUNTIME_TREE_SHA256": binding["python_runtime_tree_sha256"],
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONPYCACHEPREFIX": "/dev/null",
         "MAGI_ROOT": binding["WorkingDirectory"],
         "MAGI_ROOT_DIR": binding["WorkingDirectory"],
         "MAGI_PUBLIC_SOURCE_ROOT_DIR": binding["WorkingDirectory"],
@@ -2069,6 +2143,13 @@ def _plist(binding: Mapping[str, Any]) -> bytes:
             for env_name, (binding_name, _relative) in NAMED_MUTABLE_STATE_BINDINGS.items()
         }
     )
+    if binding.get("chromedriver_path") is not None:
+        environment.update(
+            {
+                "MAGI_CHROMEDRIVER_PATH": binding["chromedriver_path"],
+                "MAGI_CHROMEDRIVER_SHA256": binding["chromedriver_sha256"],
+            }
+        )
     if binding.get("static_external_receipt") is not None:
         environment.update(
             {
@@ -2287,7 +2368,19 @@ def _validate_shapely_sealed_runtime(python_runtime: Path) -> None:
         "print(json.dumps({'version':shapely.__version__,'origin':str(Path(shapely.__file__).resolve()),'api':callable(c)}))"
     )
     try:
-        completed = subprocess.run([str(python_runtime), "-c", probe], text=True, capture_output=True, timeout=8)
+        completed = subprocess.run(
+            [
+                str(python_runtime),
+                "-B",
+                "-X",
+                "pycache_prefix=/dev/null",
+                "-c",
+                probe,
+            ],
+            text=True,
+            capture_output=True,
+            timeout=8,
+        )
         payload = json.loads(completed.stdout or "{}") if completed.returncode == 0 else {}
         version = tuple(int(x) for x in str(payload.get("version", "")).split(".")[:2])
         origin = Path(str(payload.get("origin", ""))).resolve()
@@ -2320,6 +2413,7 @@ def prepare_deployment(
     drive_sync_token_file: Path | None = None,
     drive_sync_write_token_file: Path | None = None,
     nas_ocr_queue_db_path: Path | None = None,
+    chromedriver_path: Path | None = None,
     static_external_receipt: Path | None = None,
     deployment_mode: str = "production",
     service_manifest: Path | None = None,
@@ -2420,6 +2514,7 @@ def prepare_deployment(
         drive_sync_token_file,
         drive_sync_write_token_file,
         nas_ocr_queue_db_path,
+        chromedriver_path,
     )
     if deployment_mode == "production":
         _validate_shapely_sealed_runtime(external_inputs.python_runtime)
@@ -2446,6 +2541,7 @@ def prepare_deployment(
             static_external_receipt,
             identity=identity,
             runtime_root=runtime,
+            deployment_root=publish,
             external_inputs=external_inputs,
         )
     validated_validation_root: Path | None = None
@@ -2617,6 +2713,13 @@ def prepare_deployment(
             "python_runtime": str(external_inputs.python_runtime),
             "python_runtime_realpath": str(external_inputs.python_runtime_realpath),
             "python_runtime_sha256": external_inputs.python_runtime_sha256,
+            "chromedriver_path": (
+                str(external_inputs.chromedriver_path)
+                if external_inputs.chromedriver_path is not None
+                else None
+            ),
+            "chromedriver_sha256": external_inputs.chromedriver_sha256,
+            "chromedriver_mode": external_inputs.chromedriver_mode,
             "python_runtime_manifest": str(python_runtime_manifest_binding),
             "python_runtime_manifest_sha256": python_runtime_evidence["manifest_sha256"],
             "python_runtime_tree_sha256": python_runtime_evidence["tree_sha256"],
@@ -2679,6 +2782,16 @@ def prepare_deployment(
         mode=0o600,
     )
     artifacts.append({"path": python_runtime_relative, **python_runtime_info})
+    if static_external is not None:
+        static_receipt_relative = (
+            Path("runtime-inputs") / STATIC_EXTERNAL_RELEASE_RECEIPT_NAME
+        ).as_posix()
+        static_receipt_info = _write_atomic_exclusive(
+            staging / static_receipt_relative,
+            static_external.receipt_bytes,
+            mode=0o600,
+        )
+        artifacts.append({"path": static_receipt_relative, **static_receipt_info})
     ownership_info = _write_atomic_exclusive(
         staging / OWNERSHIP_MANIFEST_NAME,
         ownership_bytes,
@@ -2749,6 +2862,17 @@ def prepare_deployment(
         raise DeployPrepareBlocked("external Python runtime symlink target changed while rendering deployment")
     if _sha256_file(external_inputs.python_runtime_realpath) != external_inputs.python_runtime_sha256:
         raise DeployPrepareBlocked("external Python runtime changed while rendering deployment")
+    if external_inputs.chromedriver_path is not None and (
+        not external_inputs.chromedriver_path.is_file()
+        or not os.access(external_inputs.chromedriver_path, os.X_OK)
+        or _sha256_file(external_inputs.chromedriver_path)
+        != external_inputs.chromedriver_sha256
+        or f"{stat.S_IMODE(external_inputs.chromedriver_path.stat().st_mode):04o}"
+        != external_inputs.chromedriver_mode
+    ):
+        raise DeployPrepareBlocked(
+            "external ChromeDriver changed while rendering deployment"
+        )
     if _sha256_file(python_runtime_manifest) != python_runtime_evidence["manifest_sha256"]:
         raise DeployPrepareBlocked("external Python runtime manifest changed while rendering deployment")
     if _sha256_file(external_inputs.cron_jobs_source_file) != external_inputs.cron_jobs_source_sha256:
@@ -2757,9 +2881,18 @@ def prepare_deployment(
         raise DeployPrepareBlocked("external LAF config changed while rendering deployment")
     if (
         static_external is not None
-        and _sha256_file(static_external.receipt) != static_external.receipt_sha256
+        and _sha256_file(static_external.payload_receipt)
+        != static_external.payload_receipt_sha256
     ):
-        raise DeployPrepareBlocked("production static external receipt changed while rendering deployment")
+        raise DeployPrepareBlocked(
+            "production static external payload receipt changed while rendering deployment"
+        )
+    if static_external is not None and _sha256_file(
+        staging / "runtime-inputs" / STATIC_EXTERNAL_RELEASE_RECEIPT_NAME
+    ) != static_external.receipt_sha256:
+        raise DeployPrepareBlocked(
+            "production static external release receipt changed while rendering deployment"
+        )
     for name, path, expected in (
         (
             "Google credentials",
@@ -2901,6 +3034,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--drive-sync-token-file", type=Path)
     parser.add_argument("--drive-sync-write-token-file", type=Path)
     parser.add_argument("--nas-ocr-queue-db-path", type=Path)
+    parser.add_argument("--chromedriver-path", type=Path)
     parser.add_argument("--static-external-receipt", type=Path)
     parser.add_argument(
         "--deployment-mode",
@@ -2958,6 +3092,7 @@ def main(argv: list[str] | None = None) -> int:
             drive_sync_token_file=args.drive_sync_token_file,
             drive_sync_write_token_file=args.drive_sync_write_token_file,
             nas_ocr_queue_db_path=args.nas_ocr_queue_db_path,
+            chromedriver_path=args.chromedriver_path,
             static_external_receipt=args.static_external_receipt,
             deployment_mode=args.deployment_mode,
             service_manifest=args.service_manifest,

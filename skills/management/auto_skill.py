@@ -673,7 +673,7 @@ SYMBOLS = {
 # Small, safe mapping for auto-install attempts (best-effort).
 _PIP_MAP = {
     "docx": "python-docx",
-    "PyPDF2": "PyPDF2",
+    "pypdf": "pypdf",
     "pdf2image": "pdf2image",
     "rapidocr_onnxruntime": "rapidocr-onnxruntime",
     "bs4": "beautifulsoup4",
@@ -728,6 +728,10 @@ def _run_python(py, code, payload=None, timeout=60):
         return {"rc": 1, "stdout": "", "stderr": str(e)}
 
 def _pip_install(py, pkg):
+    if (os.environ.get("MAGI_V3_RELEASE_MANIFEST") or "").strip():
+        return {"ok": False, "error": "runtime install forbidden in sealed release", "blocked": True}
+    if str(os.environ.get("MAGI_DEV_SKILL_RUNTIME_MUTATIONS") or "").strip().lower() not in {"1", "true", "yes", "on"}:
+        return {"ok": False, "error": "runtime install requires explicit development opt-in", "blocked": True}
     pkg = (pkg or "").strip()
     if not pkg:
         return {"ok": False, "error": "empty pkg"}
@@ -754,6 +758,7 @@ def _missing_mod_from_error(err_text: str) -> str:
     return name
 
 def _import_test(py, auto_install=True):
+    auto_install = bool(auto_install) and not bool((os.environ.get("MAGI_V3_RELEASE_MANIFEST") or "").strip())
     code = r'''
 import importlib.util, json, sys
 p = json.loads(sys.stdin.read() or '{}') or {}
@@ -822,6 +827,7 @@ def _choose_runtime_python():
     return candidates[0] if candidates else sys.executable
 
 def _self_test(auto_install=True):
+    auto_install = bool(auto_install) and not bool((os.environ.get("MAGI_V3_RELEASE_MANIFEST") or "").strip())
     report = {
         "success": True,
         "mode": "self_test",

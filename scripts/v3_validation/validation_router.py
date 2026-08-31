@@ -38,7 +38,6 @@ GIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 MODES = frozenset({"development", "formal_promotion", "live"})
 FORMAL_MODES = frozenset({"formal_promotion", "live"})
 CORE_SECTIONS = (
-    "v2_regression",
     "v3_suites",
     "quality_contract_groups",
     "golden_sets",
@@ -232,19 +231,14 @@ def _manifest_paths(
 ) -> tuple[dict[str, tuple[str, ...]], tuple[str, ...]]:
     """Validate the release manifest and return unique paths by section."""
 
+    legacy = _as_mapping(manifest.get("legacy_v2_validation"), "legacy_v2_validation")
+    if legacy.get("mode") != "disabled":
+        raise ValidationRouterError("legacy_v2_validation must be disabled")
+    if "v2_regression" in manifest:
+        raise ValidationRouterError("v2_regression is retired from the active validation matrix")
     sections: dict[str, tuple[str, ...]] = {}
     for section in CORE_SECTIONS:
         value = manifest.get(section)
-        if section == "v2_regression":
-            obj = _as_mapping(value, section)
-            rows = obj.get("include_globs")
-            if not isinstance(rows, list) or not rows or any(not isinstance(row, str) or not row for row in rows):
-                raise ValidationRouterError("v2_regression.include_globs is invalid")
-            _validate_v2_globs(rows)
-            sections[section] = (
-                _expand_v2_globs(root.resolve(), rows) if root is not None else tuple()
-            )
-            continue
         if section == "side_effect_test_targets":
             rows = value
         else:
@@ -502,7 +496,7 @@ def route(
         binding_reasons = _release_binding_reasons(
             release_binding, root=root, manifest_path=manifest_path
         )
-        if root is None or not sections.get("v2_regression"):
+        if root is None:
             reasons.extend(binding_reasons)
             return ValidationPlan(
                 mode,
@@ -513,7 +507,7 @@ def route(
                 tuple(),
                 tuple(),
                 CORE_SECTIONS,
-                tuple(reasons + ["formal-workspace-root-and-v2-expansion-required"]),
+                tuple(reasons + ["formal-workspace-root-required"]),
                 _timing(tuple()),
             )
         _validate_node_sources(loaded_nodes, root=root, require_sources=True)
@@ -540,9 +534,9 @@ def route(
         selected_paths = core_paths
         selected_nodes = tuple(row for row in loaded_nodes if row.path in set(core_paths))
         status = "ready"
-        if root is None or not sections.get("v2_regression"):
+        if root is None:
             status = "blocked"
-            reasons.append("full-workspace-root-and-v2-expansion-required")
+            reasons.append("full-workspace-root-required")
         if loaded_nodes and not selected_nodes:
             status = "blocked"
             reasons.append("development-node-inventory-does-not-cover-core")

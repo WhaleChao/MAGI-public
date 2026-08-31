@@ -169,7 +169,7 @@ def create_stealth_driver(headless=True, download_dir=None):
         opts.add_argument("--window-size=1920,1080")
 
     # ── 穩定性 ──
-    opts.add_argument("--no-sandbox")
+    # 保留 Chromium 自身 sandbox；production 禁止繞過。
     opts.add_argument("--disable-dev-shm-usage")
     opts.add_argument("--disable-gpu")
 

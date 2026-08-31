@@ -32,14 +32,14 @@
       "evidence": [
         {
           "file": "magi_v3/gateway.py",
-          "line": 322,
+          "line": 339,
           "anchor": "def create_waitress_server",
           "kind": "source",
           "finding": "The production Gateway creates the bounded Waitress listener declared for port 5002."
         },
         {
           "file": "tests/v3/test_gateway.py",
-          "line": 666,
+          "line": 750,
           "anchor": "test_waitress_adapter_uses_bounded_production_settings_and_graceful_drain",
           "kind": "test",
           "finding": "The fixed production listener settings and graceful drain contract are exercised without taking the V2 port."
@@ -57,14 +57,14 @@
       "evidence": [
         {
           "file": "magi_v3/compat/gateway.py",
-          "line": 424,
+          "line": 522,
           "anchor": "def create_tools_app",
           "kind": "source",
           "finding": "The fixed V3 tools factory delegates to the exact V2-compatible 5003 application."
         },
         {
           "file": "tests/v3/test_gateway.py",
-          "line": 608,
+          "line": 692,
           "anchor": "test_serve_loop_stops_both_listeners_when_control_owner_is_lost",
           "kind": "test",
           "finding": "The two-listener Gateway lifecycle and fail-closed shutdown are exercised together."
@@ -132,7 +132,7 @@
       "evidence": [
         {
           "file": "magi_v3/compat/gateway.py",
-          "line": 418,
+          "line": 516,
           "anchor": "def create_main_app",
           "kind": "source",
           "finding": "The main compatibility application preserves the original WSGI request/session implementation."
@@ -182,7 +182,7 @@
       "evidence": [
         {
           "file": "magi_v3/compat/gateway.py",
-          "line": 418,
+          "line": 516,
           "anchor": "def create_main_app",
           "kind": "source",
           "finding": "The lazy WSGI compatibility factory forwards iterable streaming responses unchanged."
@@ -207,7 +207,7 @@
       "evidence": [
         {
           "file": "magi_v3/compat/gateway.py",
-          "line": 424,
+          "line": 522,
           "anchor": "def create_tools_app",
           "kind": "source",
           "finding": "The tools compatibility app preserves the original multipart WSGI request parser."

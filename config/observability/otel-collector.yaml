@@ -1,0 +1,30 @@
+# Loopback-only Collector for MAGI's PII-safe spans. Phoenix must be self-hosted.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 127.0.0.1:4317
+      http:
+        endpoint: 127.0.0.1:4318
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 256
+  batch:
+    timeout: 2s
+    send_batch_size: 256
+
+exporters:
+  otlphttp/phoenix:
+    endpoint: http://127.0.0.1:6006
+
+service:
+  telemetry:
+    logs:
+      level: warn
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/phoenix]

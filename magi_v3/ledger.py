@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import math
+import re
 import secrets
 import sqlite3
 import uuid
@@ -17,6 +18,7 @@ from typing import Any, Iterator, Mapping, Sequence
 
 from .errors import InvalidTransition, JobNotFound, LeaseConflict, LedgerError
 from .state import JobStatus, ensure_transition
+from .telemetry import receipt_trace_id
 
 
 WORKER_CLASSES = (
@@ -167,7 +169,7 @@ def _canonical_receipts(value: Sequence[Mapping[str, Any]]) -> list[dict[str, An
     if isinstance(value, (str, bytes)):
         raise ValueError("side_effect_receipts must be an array")
     receipts: list[dict[str, Any]] = []
-    allowed = {"kind", "reference", "committed_at", "idempotency_key"}
+    allowed = {"kind", "reference", "committed_at", "idempotency_key", "trace_id"}
     for item in value:
         if not isinstance(item, Mapping) or not {"kind", "reference", "committed_at"} <= set(item) <= allowed:
             raise ValueError("side-effect receipt is missing required fields or has unknown fields")
@@ -182,6 +184,12 @@ def _canonical_receipts(value: Sequence[Mapping[str, Any]]) -> list[dict[str, An
         key = receipt.get("idempotency_key")
         if key is not None and (not isinstance(key, str) or len(key) > 256):
             raise ValueError("side-effect receipt idempotency_key is invalid")
+        trace_id = receipt.get("trace_id")
+        if trace_id is not None and (
+            not isinstance(trace_id, str)
+            or not re.fullmatch(r"[0-9a-f]{32}", trace_id)
+        ):
+            raise ValueError("side-effect receipt trace_id is invalid")
         receipts.append(receipt)
     return receipts
 
@@ -1389,6 +1397,12 @@ class JobLedger:
                         raise InvalidTransition(
                             "dangerous successful completion requires a side-effect receipt"
                         )
+                    if row["side_effect_class"] in DANGEROUS_SIDE_EFFECT_CLASSES:
+                        trace_id = receipt_trace_id()
+                        receipts = [
+                            {**receipt, "trace_id": receipt.get("trace_id") or trace_id}
+                            for receipt in receipts
+                        ]
                     commit_phase = "verified"
                     ambiguous_side_effect = False
                 elif target_status in {JobStatus.FAILED, JobStatus.TIMED_OUT}:

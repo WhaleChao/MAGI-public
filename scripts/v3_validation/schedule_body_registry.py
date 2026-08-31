@@ -1131,7 +1131,13 @@ def _disposable_mariadb_dependency(
         check=False,
     )
     if install_result.returncode != 0:
-        raise ScheduleBodyRegistryError("disposable MariaDB initialization failed")
+        diagnostic = (install_result.stderr or install_result.stdout or "").strip()
+        encoded = diagnostic.encode("utf-8", errors="replace")
+        bounded = encoded[-4096:].decode("utf-8", errors="replace")
+        raise ScheduleBodyRegistryError(
+            "disposable MariaDB initialization failed "
+            f"(rc={install_result.returncode}): {bounded}"
+        )
     port = _reserve_localhost_port()
     # MariaDB rejects Unix socket paths longer than 103 bytes. Pytest/Codex
     # workdirs on macOS are much longer, so use a unique harness-owned /tmp
@@ -5544,6 +5550,7 @@ def _execute_new_sample(
             "NO_PROXY": "*",
             "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
             "PYTHONDONTWRITEBYTECODE": "1",
+            "PYTHONPYCACHEPREFIX": "/dev/null",
             # A legacy .pth file can add the currently installed live runtime to
             # sys.path.  Put the hash-bound source release first so an adapter can
             # never certify a same-named module from that live installation.

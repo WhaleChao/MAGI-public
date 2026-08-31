@@ -1,5 +1,7 @@
 # MAGI V3 取代式架構設計
 
+> 歷史設計說明：本文保留最初 V2 → V3 遷移的邊界與理由，不是目前 active validation matrix。production 與驗收現況以自動生成的 `V3_IMPLEMENTATION_STATUS.md`、`config/v3_capability_manifest.json` 與 release-bound Evidence Ledger 為準；V2 已退出 active matrix，現行回滾底線是不可變的 V3 r59。
+
 狀態：可開始實作的基準設計  
 日期：2026-07-14  
 最終目標：V3 完整取代 V2。切換前只有 V2 提供 production；切換後只有 V3 提供 production，V2 僅以已停止的 release 與狀態快照保留冷回復能力。
@@ -26,7 +28,7 @@
 - 7 個版本庫內 LaunchAgent 定義，以及本機實際安裝的 26 個 `com.magi.*` LaunchAgent。
 - 457 個 `tests/test_*.py` 測試模組（含本次新增的 V3 inventory guard）。
 
-完整機器可讀快照位於 `generated/v2_inventory.json`。這些數字是介面覆蓋下限，不代表只要數量相等就達成語意相容；每個重要流程仍須以黃金資料與副作用對帳驗證。
+歷史 V2 對照快照保留於 `generated/v2_inventory.json`；active V3 機器可讀真相改為 `generated/runtime_inventory.json`。這些數字是介面覆蓋下限，不代表只要數量相等就達成語意相容；每個重要流程仍須以黃金資料與副作用對帳驗證。來源行號只供診斷，不屬於 release 阻擋契約。
 
 ## 3. 目標拓撲
 

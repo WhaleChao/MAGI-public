@@ -189,7 +189,7 @@ def test_file_manager_preview_and_download_reject_login_redirects():
     utils = (ROOT / "static/osc/osc-utils.js").read_text(encoding="utf-8")
     html = (ROOT / "templates/osc.html").read_text(encoding="utf-8")
 
-    assert "file_manager.js?v=20260816-upload-idempotent-v1" in html
+    assert "file_manager.js?v=20260831-nas-listing-stability-v1" in html
     assert "osc-utils.js?v=20260814-readonly-fetch-retry-v1" in html
     assert "function isFileAuthRedirect" in utils
     assert 'response.type === "opaqueredirect"' in utils

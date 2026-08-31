@@ -126,7 +126,9 @@ def test_public_success_with_local_nxdomain_is_degraded_not_terminal(monkeypatch
         lambda host: {"ok": False, "host": host, "address_count": 0, "reason_code": "local_dns_unresolved"},
     )
 
-    result = MODULE.check(apply=False)
+    # This is the host-vantage contract.  A sealed release separately requires
+    # the signed off-host canary exercised at the end of this module.
+    result = MODULE._check_host_vantage(apply=False)
 
     assert result["status"] == "degraded"
     assert result["local_dns"]["ok"] is False
@@ -675,7 +677,9 @@ def test_apply_suppresses_refresh_when_confirmation_probe_recovers(monkeypatch):
         lambda host: {"ok": True, "host": host, "address_count": 1, "reason_code": "resolved"},
     )
 
-    result = MODULE.check(apply=True)
+    # A recovered host probe must not be rewritten by the separate release
+    # canary wrapper while this non-disruptive refresh policy is under test.
+    result = MODULE._check_host_vantage(apply=True)
 
     assert result["status"] == "recovered"
     assert repairs == []
@@ -769,3 +773,54 @@ def test_canonical_dns_failure_remains_red_when_edge_pins_also_fail(monkeypatch)
 
     assert result["status"] == "failed"
     assert result["reason"] == "one or more advertised public Funnel edges failed"
+
+
+def test_sealed_release_cannot_claim_external_green_without_offhost_receipt(monkeypatch):
+    monkeypatch.setenv("MAGI_V3_RELEASE_MANIFEST", "/sealed/release/release-manifest.json")
+    monkeypatch.setattr(
+        MODULE,
+        "_check_host_vantage",
+        lambda apply=False: {
+            "status": "ok",
+            "reason": "public Funnel probe succeeded",
+            "targets": [{"host": "magi.example.test", "path": "/", "proxy": "http://127.0.0.1:5002"}],
+            "next_actions": [],
+        },
+    )
+    monkeypatch.setattr(
+        MODULE,
+        "_load_offhost_canary",
+        lambda **kwargs: {"ok": False, "off_host": False, "reason_code": "off_host_receipt_unconfigured"},
+    )
+
+    result = MODULE.check(apply=False)
+
+    assert result["status"] == "degraded"
+    assert result["host_vantage_status"] == "ok"
+    assert result["availability_claim"] == "host_to_edge_only"
+    assert result["external_canary"]["off_host"] is False
+
+
+def test_fresh_offhost_receipt_allows_external_availability_claim(monkeypatch):
+    monkeypatch.setenv("MAGI_V3_RELEASE_MANIFEST", "/sealed/release/release-manifest.json")
+    monkeypatch.setattr(
+        MODULE,
+        "_check_host_vantage",
+        lambda apply=False: {
+            "status": "ok",
+            "reason": "public Funnel probe succeeded",
+            "targets": [{"host": "magi.example.test", "path": "/", "proxy": "http://127.0.0.1:5002"}],
+            "next_actions": [],
+        },
+    )
+    monkeypatch.setattr(
+        MODULE,
+        "_load_offhost_canary",
+        lambda **kwargs: {"ok": True, "off_host": True, "checks": {"dns_ipv4": True, "dns_ipv6": True, "tls": True, "http_health": True, "login_redirect": True}},
+    )
+
+    result = MODULE.check(apply=False)
+
+    assert result["status"] == "ok"
+    assert result["availability_claim"] == "externally_verified_public_availability"
+    assert result["external_canary"]["off_host"] is True

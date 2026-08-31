@@ -35,6 +35,8 @@ DEFAULT_TARGET_ROOT = (
 )
 RECEIPT_NAME = "static-external-receipt.json"
 SCHEMA = "magi.v3.static-external-staging/v2"
+RELEASE_BINDING_RECEIPT_NAME = "static-external-release-receipt.json"
+RELEASE_BINDING_SCHEMA = "magi.v3.static-external-release-binding/v1"
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 SOURCE_SPECS = (
@@ -524,6 +526,173 @@ def _verify_existing_payload(target: Path) -> tuple[dict[str, Any], tuple[Snapsh
     ):
         raise StaticExternalStagingError("static external receipt counts/privacy mismatch")
     return receipt, rows, receipt_bytes
+
+
+def verify_static_external_payload(
+    *,
+    target_root: Path = DEFAULT_TARGET_ROOT,
+    expected_target_snapshot_sha256: str | None = None,
+) -> dict[str, Any]:
+    """Verify shared payload bytes without treating their legacy context as a release binding.
+
+    A shared payload can be reused by consecutive immutable releases.  Its staging
+    receipt remains the authority for the bytes and privacy contract, while each
+    deployment receives a separate release-bound receipt below.  This deliberately
+    does not accept a release manifest and therefore cannot accidentally certify a
+    release identity.
+    """
+
+    target = _canonical_existing(target_root, label="static external target", directory=True)
+    receipt, target_rows, receipt_bytes = _verify_existing_payload(target)
+    target_sha = _snapshot_sha(target_rows)
+    if expected_target_snapshot_sha256 is not None and target_sha != _validate_sha(
+        expected_target_snapshot_sha256, label="expected target snapshot SHA-256"
+    ):
+        raise StaticExternalStagingError("expected target snapshot SHA-256 mismatch")
+    return {
+        "status": "payload_verified",
+        "schema": SCHEMA,
+        "receipt_path": str(target / RECEIPT_NAME),
+        "receipt_sha256": _sha256(receipt_bytes),
+        "receipt_context": receipt["context"],
+        "logical_inputs": receipt["logical_inputs"],
+        "file_count": receipt["file_count"],
+        "directory_count": receipt["directory_count"],
+        "byte_count": receipt["byte_count"],
+        "source_snapshot_sha256": receipt["source_snapshot_sha256"],
+        "target_snapshot_sha256": target_sha,
+        "sensitive_content_recorded": False,
+    }
+
+
+def render_static_external_release_binding(
+    release_manifest: Path,
+    *,
+    expected_release_manifest_sha256: str,
+    target_root: Path,
+    binding_receipt: Path,
+) -> tuple[bytes, dict[str, Any]]:
+    """Render, but do not write, a deployment-local release binding for shared bytes."""
+
+    context = load_release_context(
+        release_manifest,
+        expected_release_manifest_sha256=expected_release_manifest_sha256,
+    )
+    target = _canonical_existing(target_root, label="static external target", directory=True)
+    raw_binding = binding_receipt.expanduser()
+    if (
+        not raw_binding.is_absolute()
+        or raw_binding.name != RELEASE_BINDING_RECEIPT_NAME
+        or raw_binding.is_symlink()
+    ):
+        raise StaticExternalStagingError(
+            "release binding receipt must be an absolute non-symlink canonical leaf"
+        )
+    payload = verify_static_external_payload(target_root=target)
+    receipt = {
+        "schema": RELEASE_BINDING_SCHEMA,
+        "status": "bound_not_installed",
+        "context": _context_payload(context),
+        "target_root": str(target),
+        "payload_receipt": payload["receipt_path"],
+        "payload_receipt_sha256": payload["receipt_sha256"],
+        "payload_receipt_context": payload["receipt_context"],
+        "logical_inputs": payload["logical_inputs"],
+        "source_snapshot_sha256": payload["source_snapshot_sha256"],
+        "target_snapshot_sha256": payload["target_snapshot_sha256"],
+        "source_paths_recorded": False,
+        "sensitive_content_recorded": False,
+    }
+    receipt_bytes = _json_bytes(receipt)
+    return receipt_bytes, {
+        **payload,
+        "status": "release_binding_rendered",
+        "schema": RELEASE_BINDING_SCHEMA,
+        "context": _context_payload(context),
+        "binding_receipt": str(raw_binding),
+        "binding_receipt_sha256": _sha256(receipt_bytes),
+    }
+
+
+def verify_static_external_release_binding(
+    release_manifest: Path,
+    *,
+    expected_release_manifest_sha256: str,
+    binding_receipt: Path,
+    expected_binding_receipt_sha256: str,
+    target_root: Path = DEFAULT_TARGET_ROOT,
+    expected_target_snapshot_sha256: str | None = None,
+) -> dict[str, Any]:
+    """Verify a deployment-local release receipt and its shared payload authority."""
+
+    context = load_release_context(
+        release_manifest,
+        expected_release_manifest_sha256=expected_release_manifest_sha256,
+    )
+    target = _canonical_existing(target_root, label="static external target", directory=True)
+    binding = _canonical_existing(
+        binding_receipt, label="static external release binding receipt", directory=False
+    )
+    metadata = binding.lstat()
+    if (
+        stat.S_IMODE(metadata.st_mode) != 0o600
+        or metadata.st_uid != os.getuid()
+        or metadata.st_nlink != 1
+    ):
+        raise StaticExternalStagingError(
+            "static external release binding receipt mode/owner is unsafe"
+        )
+    binding_bytes = _stable_regular_bytes(
+        binding, label="static external release binding receipt"
+    )
+    expected_binding = _validate_sha(
+        expected_binding_receipt_sha256,
+        label="static external release binding receipt SHA-256",
+    )
+    if _sha256(binding_bytes) != expected_binding:
+        raise StaticExternalStagingError(
+            "static external release binding receipt SHA-256 mismatch"
+        )
+    receipt = _load_json(binding_bytes, label="static external release binding receipt")
+    exact_keys = {
+        "schema", "status", "context", "target_root", "payload_receipt",
+        "payload_receipt_sha256", "payload_receipt_context", "logical_inputs",
+        "source_snapshot_sha256", "target_snapshot_sha256",
+        "source_paths_recorded", "sensitive_content_recorded",
+    }
+    if set(receipt) != exact_keys:
+        raise StaticExternalStagingError(
+            "static external release binding receipt fields mismatch"
+        )
+    payload = verify_static_external_payload(
+        target_root=target,
+        expected_target_snapshot_sha256=expected_target_snapshot_sha256,
+    )
+    if (
+        receipt.get("schema") != RELEASE_BINDING_SCHEMA
+        or receipt.get("status") != "bound_not_installed"
+        or receipt.get("context") != _context_payload(context)
+        or receipt.get("target_root") != str(target)
+        or receipt.get("payload_receipt") != payload["receipt_path"]
+        or receipt.get("payload_receipt_sha256") != payload["receipt_sha256"]
+        or receipt.get("payload_receipt_context") != payload["receipt_context"]
+        or receipt.get("logical_inputs") != payload["logical_inputs"]
+        or receipt.get("source_snapshot_sha256") != payload["source_snapshot_sha256"]
+        or receipt.get("target_snapshot_sha256") != payload["target_snapshot_sha256"]
+        or receipt.get("source_paths_recorded") is not False
+        or receipt.get("sensitive_content_recorded") is not False
+    ):
+        raise StaticExternalStagingError(
+            "static external release binding context/payload mismatch"
+        )
+    return {
+        **payload,
+        "status": "release_binding_verified",
+        "schema": RELEASE_BINDING_SCHEMA,
+        "context": _context_payload(context),
+        "binding_receipt": str(binding),
+        "binding_receipt_sha256": expected_binding,
+    }
 
 
 def _atomic_exchange(left: Path, right: Path) -> bool:

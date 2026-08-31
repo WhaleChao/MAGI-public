@@ -2604,13 +2604,6 @@ def _osc_read_pdf_text(path: str) -> str:
         return "\n".join((page.extract_text() or "") for page in reader.pages)
     except Exception:
         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "_osc_read_pdf_text:pypdf", exc_info=True)
-    try:
-        from PyPDF2 import PdfReader  # type: ignore
-
-        reader = PdfReader(path)
-        return "\n".join((page.extract_text() or "") for page in reader.pages)
-    except Exception:
-        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "_osc_read_pdf_text:PyPDF2", exc_info=True)
     tool = shutil.which("pdftotext")
     if tool:
         try:

@@ -21,6 +21,10 @@ from scripts.v3_release_gate import (
     evaluate_evidence,
     validate_evidence,
 )
+from scripts.v3_validation.worker_soak_evidence import (
+    WorkerSoakEvidenceError,
+    summarize_worker_soak_measurements,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 BASE_CONFIG = json.loads((ROOT / "config" / "v3_cutover_gates.json").read_text())
@@ -36,8 +40,13 @@ CONTEXT = {
 def test_release_gate_recomputes_dynamic_route_seatbelt_contract(
     tmp_path: Path,
 ) -> None:
+    from scripts.v3_validation.route_certification import _seatbelt_attestation
+
     workspace = tmp_path / "route-certification" / "ordinary-week"
     attestation = _route_seatbelt_attestation(workspace)
+    assert attestation == _seatbelt_attestation(workspace)
+    assert attestation["schema_version"] == 2
+    assert attestation["live_magi_mutable_read_write_denied"] is True
     environment = attestation["environment_allowlist"]
     assert "MAGI_V3_ROUTE_CERTIFYING" in environment["formal_base"]
     assert "MAGI_V3_ROUTE_CERTIFYING" in environment["formal_trace"]
@@ -47,6 +56,43 @@ def test_release_gate_recomputes_dynamic_route_seatbelt_contract(
     )
     attestation["profile_sha256"] = "0" * 64
     assert _route_attested_seatbelt_workspace(attestation, "ordinary-week") is None
+
+
+def test_worker_soak_metrics_follow_targeted_campaign_pass_count() -> None:
+    row = {
+        "cycles_requested": 100,
+        "cycles_completed": 100,
+        "process_groups_gone": 100,
+        "active_workers_after": 0,
+        "governor_slots_after": 0,
+        "fd_drift": 0,
+    }
+
+    assert summarize_worker_soak_measurements([row]) == {
+        "cycles": 100,
+        "unreaped_workers": 0,
+        "resource_baseline_restored": True,
+    }
+    assert summarize_worker_soak_measurements([row] * 7)["cycles"] == 700
+
+
+def test_worker_soak_metrics_fail_closed_without_hiding_unreaped_workers() -> None:
+    row = {
+        "cycles_requested": 100,
+        "cycles_completed": 100,
+        "process_groups_gone": 99,
+        "active_workers_after": 0,
+        "governor_slots_after": 0,
+        "fd_drift": 0,
+    }
+    assert summarize_worker_soak_measurements([row]) == {
+        "cycles": 100,
+        "unreaped_workers": 1,
+        "resource_baseline_restored": False,
+    }
+    row["fd_drift"] = True
+    with pytest.raises(WorkerSoakEvidenceError, match="non-negative integer"):
+        summarize_worker_soak_measurements([row])
 
 
 def test_release_gate_route_formal_environment_allowlist_fails_closed_on_drift(
@@ -136,7 +182,7 @@ def _campaign_days_for_safety(workload: str, *, network: bool, external: bool) -
                 }
             ]
         }
-        for validation_pass in range(1, 8)
+        for validation_pass in range(1, 2)
     ]
 
 
@@ -144,7 +190,7 @@ def test_release_gate_schedule_allows_only_disposable_internal_network() -> None
     workload = "seven_day_schedule_10x_arrival_2x_duration_replay"
     days = _campaign_days_for_safety(workload, network=True, external=False)
 
-    assert len(_campaign_structured_rows(days, workload)) == 7
+    assert len(_campaign_structured_rows(days, workload)) == 1
 
     days[0]["workloads"][0]["structured_evidence"][
         "external_network_access_performed"
@@ -154,7 +200,7 @@ def test_release_gate_schedule_allows_only_disposable_internal_network() -> None
 
 
 def test_release_gate_non_schedule_workload_still_rejects_any_network() -> None:
-    workload = "matched_v2_v3_performance"
+    workload = "golden_business_flows"
     days = _campaign_days_for_safety(workload, network=True, external=False)
 
     with pytest.raises(ValueError, match="safety attestation failed"):
@@ -424,7 +470,7 @@ def _route_sources(
         "python_runtime_manifest_sha256": runtime_artifact.sha256,
         "python_runtime_tree_sha256": runtime["tree_sha256"],
         "fail_closed": unarmed,
-        "required_independent_passes": 7,
+        "required_independent_passes": 1,
         "artifacts": [],
     }
     if tamper_role == "upstream_route_reviews":
@@ -439,7 +485,7 @@ def _route_sources(
         )
     certification_artifacts = [
         _bound("upstream_route_certification_report", {"invalid_fixture": index})
-        for index in range(7)
+        for index in range(1)
     ]
     campaign_day_artifact = _bound("upstream_campaign_day", {"invalid_fixture": True})
     campaign["artifacts"] = [
@@ -516,7 +562,7 @@ def test_authoritative_counter_rejects_negative_bool_and_non_integer(value: obje
         _nonnegative_int(value, "fault counter")
 
 
-def test_handwritten_twenty_eight_semantic_envelopes_cannot_be_go(tmp_path: Path) -> None:
+def test_handwritten_semantic_envelopes_cannot_be_go(tmp_path: Path) -> None:
     assert list(EVIDENCE_SPECS) == BASE_CONFIG["required_evidence"]
     write_all_valid(tmp_path)
 
@@ -524,7 +570,7 @@ def test_handwritten_twenty_eight_semantic_envelopes_cannot_be_go(tmp_path: Path
 
     assert report["decision"] == "NO_GO"
     assert report["passed_count"] == 0
-    assert len(report["invalid"]) == len(EVIDENCE_SPECS) == 28
+    assert len(report["invalid"]) == len(EVIDENCE_SPECS) == 14
     assert all(
         any("no code-owned authoritative verifier" in error for error in errors)
         for errors in report["invalid"].values()
@@ -542,7 +588,7 @@ def test_registered_machine_producers_resolve_to_release_source() -> None:
 
 
 def test_missing_failed_and_invalid_evidence_are_no_go(tmp_path: Path) -> None:
-    failed_id = "v2_regression_passed_in_release_venv"
+    failed_id = "v3_unit_contract_integration_e2e_passed"
     invalid_id = "runtime_route_inventory_current"
     write_evidence(tmp_path, evidence(failed_id, status="failed"))
     invalid, invalid_report = evidence(invalid_id)
@@ -686,9 +732,9 @@ def test_registered_producer_and_schema_are_not_free_form(tmp_path: Path) -> Non
 
 
 def test_threshold_failure_cannot_be_hidden_by_passed_status(tmp_path: Path) -> None:
-    evidence_id = "matched_v2_warm_cold_performance_baseline_complete"
+    evidence_id = "atomic_release_switch_and_cold_rollback_drill_passed"
     document, report = evidence(evidence_id)
-    report["metrics"]["maximum_p95_regression_ratio"] = 0.50
+    report["metrics"]["rollback_rto_seconds"] = 121
     metrics_digest = hashlib.sha256(_canonical_json_bytes(report["metrics"])).hexdigest()
     report["metrics_sha256"] = metrics_digest
     document["metrics_sha256"] = metrics_digest
@@ -698,11 +744,11 @@ def test_threshold_failure_cannot_be_hidden_by_passed_status(tmp_path: Path) -> 
     result = evaluate(tmp_path)
 
     errors = result["invalid"][evidence_id]
-    assert any("maximum_p95_regression_ratio" in error and "le 0.05" in error for error in errors)
+    assert any("rollback_rto_seconds" in error and "le 120" in error for error in errors)
 
 
 def test_metrics_digest_must_bind_envelope_to_producer_report(tmp_path: Path) -> None:
-    evidence_id = "resource_policy_all_budgets_passed"
+    evidence_id = "v3_unit_contract_integration_e2e_passed"
     document, report = evidence(evidence_id)
     document["metrics_sha256"] = "b" * 64
     write_evidence(tmp_path, (document, report))

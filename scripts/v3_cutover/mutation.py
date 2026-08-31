@@ -73,12 +73,9 @@ REQUIRED_V2_APPLICATION_LABELS = (
     "com.magi.laf-nightly-audit",
     "com.magi.log-rotate",
     "com.magi.menubar",
-    "com.magi.mlx-mtp",
     "com.magi.nightly-health-report",
     "com.magi.obsidian-ingest",
     "com.magi.omlx-restore",
-    "com.magi.paperclip-share-gateway",
-    "com.magi.paperclip-share-tunnel",
     "com.magi.pdf-namer-nightly",
     "com.magi.purge-persona-memories",
     "com.magi.reprocess-insights",
@@ -95,13 +92,15 @@ REQUIRED_PRE_CUTOVER_CHECKS = frozenset(
     {
         "cutover_window",
         "gate_config_binding",
-        "v2_only_ownership",
         "v3_deploy_prepared",
         "v3_readiness_manifest",
         "v3_release_marker_manifest",
-        "pdf_namer_handoff_precopy",
     }
 )
+LEGACY_V2_PRE_CUTOVER_CHECKS = frozenset(
+    {"v2_only_ownership", "pdf_namer_handoff_precopy"}
+)
+CURRENT_V3_PRE_CUTOVER_CHECKS = frozenset({"previous_v3_only_ownership"})
 MAX_PRE_CUTOVER_AGE_SECONDS = 15 * 60
 OWNERSHIP_MANIFEST_NAME = "ownership/ownership-manifest.json"
 ATOMIC_DRILL_EXCLUDED_EVIDENCE = (
@@ -2106,13 +2105,21 @@ class PreparedCutoverExecutor:
                 raise CutoverError("pdf-namer handoff evidence is unavailable or invalid") from exc
 
         gates = _load_json(self.plan.gate_config.path, description="gate config")
+        source_contract = gates.get("source_contract")
+        legacy_v2_contract = (
+            isinstance(source_contract, dict)
+            and source_contract.get("legacy_v2_validation") != "disabled"
+        )
         if (
             gates.get("schema_version") != 1
             or gates.get("timezone") != "Asia/Taipei"
             or not isinstance(gates.get("window"), dict)
-            or not isinstance(gates.get("source_contract"), dict)
-            or gates["source_contract"].get("database_relatives")
-            != [relative for relative, _tables in FORMAL_STATE_DATABASES]
+            or not isinstance(source_contract, dict)
+            or (
+                legacy_v2_contract
+                and source_contract.get("database_relatives")
+                != [relative for relative, _tables in FORMAL_STATE_DATABASES]
+            )
         ):
             raise CutoverError("execute requires a valid release-bound Asia/Taipei cutover window")
         now = self.clock()
@@ -2126,6 +2133,26 @@ class PreparedCutoverExecutor:
             )
 
         report = _load_json(self.plan.pre_cutover_report.path, description="pre-cutover report")
+        required_evidence = gates.get("required_evidence")
+        if (
+            not isinstance(required_evidence, list)
+            or not required_evidence
+            or any(not isinstance(item, str) or not item for item in required_evidence)
+            or len(required_evidence) != len(set(required_evidence))
+            or any(item not in required_evidence for item in ATOMIC_DRILL_EXCLUDED_EVIDENCE)
+        ):
+            raise CutoverError("execute requires a valid required evidence contract")
+        required_count = len(required_evidence)
+        drill_passed_count = required_count - len(ATOMIC_DRILL_EXCLUDED_EVIDENCE)
+        legacy_v2 = (
+            gates.get("source_contract", {}).get("legacy_v2_validation")
+            != "disabled"
+        )
+        required_pre_cutover_checks = REQUIRED_PRE_CUTOVER_CHECKS | (
+            LEGACY_V2_PRE_CUTOVER_CHECKS
+            if legacy_v2
+            else CURRENT_V3_PRE_CUTOVER_CHECKS
+        )
         checks = report.get("checks")
         check_map = (
             {
@@ -2137,9 +2164,9 @@ class PreparedCutoverExecutor:
             else {}
         )
         expected_stage = (
-            "cutover_drill_26_of_28"
+            f"cutover_drill_{drill_passed_count}_of_{required_count}"
             if self.plan.execution_purpose == "atomic_drill"
-            else "final_cutover_28_of_28"
+            else f"final_cutover_{required_count}_of_{required_count}"
         )
         expected_decision = (
             "GO_FOR_CUTOVER_DRILL_ONLY"
@@ -2151,13 +2178,17 @@ class PreparedCutoverExecutor:
             if self.plan.execution_purpose == "atomic_drill"
             else []
         )
-        expected_passed = 26 if self.plan.execution_purpose == "atomic_drill" else 28
+        expected_passed = (
+            drill_passed_count
+            if self.plan.execution_purpose == "atomic_drill"
+            else required_count
+        )
         if not (
             report.get("schema_version") == 1
             and report.get("decision") == expected_decision
             and report.get("gate_stage") == expected_stage
             and report.get("execution_purpose") == self.plan.execution_purpose
-            and report.get("required_evidence_count") == 28
+            and report.get("required_evidence_count") == required_count
             and report.get("passed_evidence_count") == expected_passed
             and report.get("excluded_evidence") == expected_excluded
             and report.get("fail_closed") is True
@@ -2167,7 +2198,7 @@ class PreparedCutoverExecutor:
             and bool(checks)
             and len(check_map) == len(checks)
             and all(row.get("ok") is True for row in checks if isinstance(row, dict))
-            and all(check_map.get(name) is True for name in REQUIRED_PRE_CUTOVER_CHECKS)
+            and all(check_map.get(name) is True for name in required_pre_cutover_checks)
             and report.get("gate_config_sha256") == self.plan.gate_config.sha256
         ):
             raise CutoverError("pre-cutover report is not a fully passing hash-bound GO")
@@ -2238,8 +2269,10 @@ class PreparedCutoverExecutor:
         release_gate = _load_json(gate_report.path, description="bound release gate report")
         gate_invalid = release_gate.get("invalid")
         required_evidence = gates.get("required_evidence")
-        if not isinstance(required_evidence, list) or len(required_evidence) != 28:
-            raise CutoverError("cutover gate config does not contain the exact 28 evidence IDs")
+        if not isinstance(required_evidence, list) or len(required_evidence) != required_count:
+            raise CutoverError(
+                "cutover gate config required evidence contract changed during validation"
+            )
         if self.plan.execution_purpose == "atomic_drill":
             expected_passed_evidence = [
                 item for item in required_evidence if item not in ATOMIC_DRILL_EXCLUDED_EVIDENCE
@@ -2263,7 +2296,7 @@ class PreparedCutoverExecutor:
             gate_report.sha256 == gate_binding.get("sha256")
             and release_gate.get("schema_version") == 1
             and release_gate.get("fail_closed") is True
-            and release_gate.get("required_count") == 28
+            and release_gate.get("required_count") == required_count
             and release_gate.get("expected_context") == report.get("expected_context")
             and release_gate_ok
         ):

@@ -14,6 +14,7 @@ from scripts.v3_campaign.offline_probes import (
     _production_duration_replay_certifying,
     _with_timeout_bound_duration_fallbacks,
     bound_cron_jobs,
+    bound_dispatch_policy,
     run_fault_campaign,
     run_schedule_replay,
 )
@@ -21,6 +22,14 @@ from scripts.v3_campaign.schedule_realism import run_schedule_realism_assessment
 
 EVIDENCE_PREFIX = "MAGI_V3_OFFLINE_EVIDENCE="
 SOURCE_ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_schedule_count_is_bound_to_dispatch_policy_not_stale_probe_literals() -> None:
+    jobs, cron_sha = bound_cron_jobs(SOURCE_ROOT)
+    expected_enabled, policy_sha = bound_dispatch_policy(SOURCE_ROOT, cron_sha)
+
+    assert expected_enabled == len([job for job in jobs if job.get("enabled") is True])
+    assert len(policy_sha) == 64
 
 
 def test_missing_duration_profile_uses_explicit_noncertifying_timeout_bound() -> None:
@@ -151,7 +160,10 @@ def test_seven_day_schedule_10x_arrival_2x_duration_replay_emits_measured_eviden
     # exercised; missing jobs stay explicitly fail-closed below.
     assert duration_coverage["p95_jobs"] > 0
     assert duration_coverage["sparse_fallback_jobs"] > 0
-    assert duration_coverage["missing_jobs"] == 5
+    # Missing-duration membership is release-bound evidence and changes as
+    # jobs are added or acquire enough observations.  Keep it fail-closed but
+    # do not pin one historical count into the validator.
+    assert duration_coverage["missing_jobs"] > 0
     assert duration_coverage["certifying_p95_coverage"] is False
     assert len(duration_coverage["duration_profiles_sha256"]) == 64
     timeout_fallback = production_replay["missing_duration_fallback"]

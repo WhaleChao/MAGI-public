@@ -1,4 +1,5 @@
 from casper_ecosystem.law_firm_orchestrators import laf_nightly_audit as audit
+import importlib
 import json
 
 
@@ -8,6 +9,41 @@ def _synthetic_windows_path(drive, *parts):
 
 def _synthetic_posix_path(*parts):
     return "/" + "/".join(parts)
+
+
+def test_get_db_skips_lazy_profile_without_case_inventory(monkeypatch, tmp_path):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "mariadb_profiles": [
+                    {"profile_name": "empty", "config": {"host": "empty", "database": "law"}},
+                    {"profile_name": "authoritative", "config": {"host": "good", "database": "law"}},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class FakeDb:
+        def __init__(self, db_config):
+            self.db_config = dict(db_config)
+
+        def fetch_one(self, query, params=(), as_dict=False):
+            assert as_dict is True
+            if "COUNT(*)" in query:
+                return {"case_count": 197 if self.db_config.get("host") == "good" else 0}
+            return {"ok": 1}
+
+    osc_module = importlib.import_module("osc")
+    monkeypatch.setattr(osc_module, "DatabaseManager", FakeDb)
+    monkeypatch.setattr(audit, "get_config_path", lambda _name: config_path)
+    monkeypatch.delenv("MAGI_PREFER_LOCAL_DB", raising=False)
+
+    selected = audit._get_db(require_case_inventory=True)
+
+    assert selected is not None
+    assert selected.db_config["host"] == "good"
 
 
 def test_run_portal_new_files_scan_uses_portal_case_fetch(monkeypatch):
@@ -32,7 +68,7 @@ def test_run_portal_new_files_scan_uses_portal_case_fetch(monkeypatch):
         captured["auto_download"] = auto_download
         return [{"laf_no": only_laf_no, "auto_downloaded": 2, "new_count": 0}]
 
-    monkeypatch.setattr(audit, "_get_db", lambda: FakeDb())
+    monkeypatch.setattr(audit, "_get_db", lambda **_kwargs: FakeDb())
     monkeypatch.setattr(audit, "scan_portal_new_files", fake_scan)
 
     result = audit.run_portal_new_files_scan(
@@ -49,7 +85,7 @@ def test_run_portal_new_files_scan_uses_portal_case_fetch(monkeypatch):
 
 
 def test_run_portal_new_files_scan_marks_remaining_missing_as_action_required(monkeypatch):
-    monkeypatch.setattr(audit, "_get_db", lambda: object())
+    monkeypatch.setattr(audit, "_get_db", lambda **_kwargs: object())
     monkeypatch.setattr(
         audit,
         "fetch_laf_cases_for_portal_scan",
@@ -79,7 +115,7 @@ def test_run_portal_new_files_scan_marks_remaining_missing_as_action_required(mo
 
 
 def test_run_portal_new_files_scan_keeps_unverified_mapping_out_of_missing_count(monkeypatch):
-    monkeypatch.setattr(audit, "_get_db", lambda: object())
+    monkeypatch.setattr(audit, "_get_db", lambda **_kwargs: object())
     monkeypatch.setattr(
         audit,
         "fetch_laf_cases_for_portal_scan",
@@ -113,7 +149,7 @@ def test_run_portal_new_files_scan_keeps_unverified_mapping_out_of_missing_count
 
 
 def test_run_portal_new_files_scan_fails_closed_when_listing_unavailable(monkeypatch):
-    monkeypatch.setattr(audit, "_get_db", lambda: object())
+    monkeypatch.setattr(audit, "_get_db", lambda **_kwargs: object())
     monkeypatch.setattr(
         audit,
         "fetch_laf_cases_for_portal_scan",
@@ -137,7 +173,7 @@ def test_run_portal_new_files_scan_fails_closed_when_listing_unavailable(monkeyp
 
 
 def test_run_portal_new_files_scan_defers_when_case_inventory_empty(monkeypatch):
-    monkeypatch.setattr(audit, "_get_db", lambda: object())
+    monkeypatch.setattr(audit, "_get_db", lambda **_kwargs: object())
     monkeypatch.setattr(audit, "fetch_laf_cases_for_portal_scan", lambda _db: [])
 
     result = audit.run_portal_new_files_scan(auto_download=False)

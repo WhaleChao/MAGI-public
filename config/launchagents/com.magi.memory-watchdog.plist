@@ -8,7 +8,7 @@
     <array>
         <string>/bin/bash</string>
         <string>-c</string>
-        <string>test -n "${MAGI_ROOT:-}" || exit 78; exec "${MAGI_PYTHON_EXECUTABLE:-$MAGI_ROOT/bin/magi-v3-python}" "$MAGI_ROOT/scripts/ops/memory_watchdog.py"</string>
+        <string>app="${MAGI_APP_ROOT:-$HOME/Library/Application Support/MAGI}"; launcher="${MAGI_ACTIVE_SERVICE_LAUNCHER:-$app/bin/magi-active-release-service.py}"; python="${MAGI_ACTIVE_SERVICE_PYTHON:-/usr/bin/python3}"; test -f "$launcher" &amp;&amp; test -x "$python" || exit 78; exec "$python" "$launcher" memory-watchdog</string>
     </array>
     <key>RunAtLoad</key>
     <true/>

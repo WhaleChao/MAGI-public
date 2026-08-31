@@ -50,10 +50,27 @@ night_fallback_cooldown_active() {
     fallback_cooldown_active "$NIGHT_FALLBACK_STAMP_FILE" "$NIGHT_FALLBACK_RETRY_SEC"
 }
 
+plist_set_env() {
+    local key="$1"
+    local value="$2"
+    local plist="$HOME/Library/LaunchAgents/com.magi.omlx.plist"
+    /usr/libexec/PlistBuddy -c "Set :EnvironmentVariables:${key} ${value}" "$plist" 2>/dev/null || \
+        /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:${key} string ${value}" "$plist" 2>/dev/null || true
+}
+
+ensure_python_bytecode_policy() {
+    # Keep Homebrew's mutable stdlib cache outside the verified runtime tree.
+    # This must run before auto-mode's healthy/degraded early exits so an
+    # already healthy model still receives the policy for its next launch.
+    plist_set_env PYTHONDONTWRITEBYTECODE 1
+    plist_set_env PYTHONPYCACHEPREFIX /dev/null
+}
+
 # ---- auto 模式：依當前時間自動選 day / night（在 lock 之前解析）----
 # day 窗口：06:35-21:49（06:35 排程重開後即應進入日間；06:55 只是安全重試）
 # 重要：auto 模式有冪等檢查 — 需「實際 API 模型」與 models-text 都對應正確才跳過切換
 if [ "$MODE" = "auto" ]; then
+    ensure_python_bytecode_policy
     current_hour=$((10#$(date +%H)))
     current_minute=$((10#$(date +%M)))
     current_total_min=$((current_hour * 60 + current_minute))
@@ -171,14 +188,6 @@ OMLX_SSD_CACHE_ROOT="${MAGI_OMLX_PAGED_CACHE_ROOT:-$HOME/.omlx/paged-cache}"
 OMLX_CACHE_ON_SSD="${MAGI_OMLX_CACHE_ON_SSD:-1}"
 
 log() { printf '%s [switch] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" | tee -a "$LOG"; }
-
-plist_set_env() {
-    local key="$1"
-    local value="$2"
-    local plist="$HOME/Library/LaunchAgents/com.magi.omlx.plist"
-    /usr/libexec/PlistBuddy -c "Set :EnvironmentVariables:${key} ${value}" "$plist" 2>/dev/null || \
-        /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:${key} string ${value}" "$plist" 2>/dev/null || true
-}
 
 plist_set_program_arg() {
     local plist="$1"
@@ -386,6 +395,7 @@ preflight_memory_check() {
 configure_e4b_runtime_env() {
     local paged_cache_dir
     paged_cache_dir=$(omlx_cache_dir cache-e4b "${HOME}/.omlx/cache-e4b")
+    ensure_python_bytecode_policy
     plist_set_env OMLX_TEXT_MAX_MODEL_MEMORY 8GB
     plist_set_env OMLX_TEXT_MAX_PROCESS_MEMORY 10GB
     plist_set_env OMLX_TEXT_INITIAL_CACHE_BLOCKS 8
@@ -412,6 +422,7 @@ configure_12b_runtime_env() {
     local profile_label="${1:-12B fallback}"
     local paged_cache_dir
     paged_cache_dir=$(omlx_cache_dir cache-gemma4-12b "${HOME}/.omlx/cache-gemma4-12b")
+    ensure_python_bytecode_policy
     plist_set_env OMLX_TEXT_MAX_MODEL_MEMORY "$NIGHT_FALLBACK_12B_MAX_MODEL_MEMORY"
     plist_set_env OMLX_TEXT_MAX_PROCESS_MEMORY "$NIGHT_FALLBACK_12B_MAX_PROCESS_MEMORY"
     plist_set_env OMLX_TEXT_INITIAL_CACHE_BLOCKS "$NIGHT_FALLBACK_12B_INITIAL_CACHE_BLOCKS"
@@ -429,6 +440,7 @@ configure_12b_runtime_env() {
 configure_night_runtime_env() {
     local paged_cache_dir
     paged_cache_dir=$(omlx_cache_dir cache-26b "${HOME}/.omlx/cache-26b")
+    ensure_python_bytecode_policy
     plist_set_env OMLX_TEXT_MAX_MODEL_MEMORY 16GB
     plist_set_env OMLX_TEXT_MAX_PROCESS_MEMORY 17GB
     plist_set_env OMLX_TEXT_INITIAL_CACHE_BLOCKS 2

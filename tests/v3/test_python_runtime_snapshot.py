@@ -7,6 +7,7 @@ import pytest
 import scripts.v3_python_runtime_snapshot as runtime_snapshot
 
 from scripts.v3_python_runtime_snapshot import (
+    BYTECODE_CACHE_POLICY,
     PythonRuntimeBlocked,
     build_runtime_manifest,
     verify_runtime_manifest,
@@ -49,7 +50,39 @@ def test_complete_runtime_tree_is_hash_bound_and_verifiable(tmp_path: Path) -> N
     assert report["status"] == "passed"
     assert report["tree_sha256"] == evidence["tree_sha256"] == payload["tree_sha256"]
     assert payload["file_count"] == 3
+    assert payload["bytecode_cache_policy"] == BYTECODE_CACHE_POLICY
     assert any(row["path"].endswith("site-packages/example.py") for row in payload["files"])
+
+
+def test_default_bytecode_cache_growth_does_not_drift_bound_runtime(tmp_path: Path) -> None:
+    python = _runtime(tmp_path)
+    cache = python.parent.parent / "lib" / "python3.14" / "__pycache__"
+    cache.mkdir()
+    (cache / "first.cpython-314.pyc").write_bytes(b"first-cache")
+    encoded, evidence = build_runtime_manifest(python)
+    manifest = tmp_path / "python-runtime-manifest.json"
+    manifest.write_bytes(encoded)
+    (cache / "second.cpython-314.pyc").write_bytes(b"second-cache")
+
+    report = verify_runtime_manifest(
+        manifest.resolve(),
+        expected_tree_sha256=evidence["tree_sha256"],
+    )
+
+    payload = json.loads(encoded)
+    assert report["status"] == "passed"
+    assert not any("__pycache__" in row["path"] for row in payload["files"])
+    assert not any("__pycache__" in row["path"] for row in payload["directories"])
+
+
+def test_excluded_bytecode_cache_cannot_hide_non_bytecode_member(tmp_path: Path) -> None:
+    python = _runtime(tmp_path)
+    cache = python.parent.parent / "lib" / "python3.14" / "__pycache__"
+    cache.mkdir()
+    (cache / "startup-hook.py").write_text("raise RuntimeError\n", encoding="utf-8")
+
+    with pytest.raises(PythonRuntimeBlocked, match="forbidden member"):
+        build_runtime_manifest(python)
 
 
 def test_dependency_or_mode_drift_is_rejected(tmp_path: Path) -> None:

@@ -56,6 +56,11 @@ fcntl = _PortableFileLock
 sys.dont_write_bytecode = True
 
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+BYTECODE_CACHE_POLICY = {
+    "default_cache_directories": "structurally_validated_but_not_hash_bound",
+    "required_pycache_prefix": "/dev/null",
+    "write_bytecode": False,
+}
 _SAFE_EXECUTABLE_PTH_LINES = frozenset(
     {
         "import os; var = 'SETUPTOOLS_USE_DISTUTILS'; enabled = os.environ.get(var, 'local') == 'local'; enabled and __import__('_distutils_hack').add_shim();",
@@ -143,6 +148,32 @@ def _validate_pth(root: Path, path: Path) -> None:
             )
 
 
+def _validate_excluded_bytecode_cache(path: Path) -> None:
+    """Allow only inert CPython cache files in an excluded __pycache__ tree.
+
+    Production starts Python with ``-B -X pycache_prefix=/dev/null``.  Default
+    ``__pycache__`` directories therefore are neither read nor written, and
+    must not make the supply-chain tree drift as Homebrew imports new stdlib
+    modules.  Reject every non-regular or non-bytecode member so the exclusion
+    can never hide source, native code, startup hooks, or symlink escapes.
+    """
+
+    try:
+        members = tuple(path.iterdir())
+    except OSError as exc:
+        raise PythonRuntimeBlocked(f"runtime bytecode cache is unreadable: {path}") from exc
+    for member in members:
+        metadata = member.lstat()
+        if (
+            stat.S_ISLNK(metadata.st_mode)
+            or not stat.S_ISREG(metadata.st_mode)
+            or member.suffix != ".pyc"
+        ):
+            raise PythonRuntimeBlocked(
+                f"runtime bytecode cache contains a forbidden member: {member}"
+            )
+
+
 def _scan(
     root: Path,
     *,
@@ -164,6 +195,10 @@ def _scan(
         )
         for name in tuple(directory_names):
             candidate = base / name
+            if name == "__pycache__" and not candidate.is_symlink():
+                _validate_excluded_bytecode_cache(candidate)
+                directory_names.remove(name)
+                continue
             if candidate.is_symlink():
                 relative = candidate.relative_to(root).as_posix()
                 try:
@@ -311,6 +346,7 @@ def build_runtime_manifest(python_runtime: Path) -> tuple[bytes, dict[str, Any]]
     ).hexdigest()
     payload = {
         "schema_version": 1,
+        "bytecode_cache_policy": BYTECODE_CACHE_POLICY,
         "runtime_root": str(root),
         "base_runtime_root": str(base_root),
         "python_runtime": str(declared),
@@ -349,6 +385,8 @@ def verify_runtime_manifest(
         raise PythonRuntimeBlocked(f"Python runtime manifest is unreadable: {exc}") from exc
     if not isinstance(expected, dict) or expected.get("schema_version") != 1:
         raise PythonRuntimeBlocked("Python runtime manifest schema_version must equal 1")
+    if expected.get("bytecode_cache_policy") != BYTECODE_CACHE_POLICY:
+        raise PythonRuntimeBlocked("Python runtime bytecode cache policy is invalid")
     tree_sha = expected.get("tree_sha256")
     runtime_text = expected.get("python_runtime")
     if not isinstance(tree_sha, str) or not SHA256_RE.fullmatch(tree_sha):

@@ -293,6 +293,88 @@ def test_source_and_target_snapshots_can_be_reverified_independently(tmp_path: P
         )
 
 
+def test_shared_payload_receipt_is_not_rebound_when_next_release_is_prepared(
+    tmp_path: Path,
+) -> None:
+    release1, release1_sha, _paths, target, payload_report = _stage(tmp_path)
+    payload_receipt = target / RECEIPT_NAME
+    payload_receipt_before = payload_receipt.read_bytes()
+    payload_receipt_sha_before = _sha(payload_receipt)
+    release2 = _write_json(
+        tmp_path / "release2/release-manifest.json",
+        {
+            "schema_version": 1,
+            "release_id": "v3-test-rc2",
+            "immutable": True,
+            "source_snapshot_sha256": "b" * 64,
+            "release_sha256": "b" * 64,
+            "files": [],
+        },
+    )
+    release2_sha = _sha(release2)
+    binding_path = (
+        tmp_path
+        / "deployments/v3-test-rc2/runtime-inputs"
+        / staging_module.RELEASE_BINDING_RECEIPT_NAME
+    )
+    binding_bytes, rendered = staging_module.render_static_external_release_binding(
+        release2,
+        expected_release_manifest_sha256=release2_sha,
+        target_root=target,
+        binding_receipt=binding_path,
+    )
+    _write(binding_path, binding_bytes)
+
+    assert payload_receipt.read_bytes() == payload_receipt_before
+    assert _sha(payload_receipt) == payload_receipt_sha_before
+    verified = staging_module.verify_static_external_release_binding(
+        release2,
+        expected_release_manifest_sha256=release2_sha,
+        binding_receipt=binding_path,
+        expected_binding_receipt_sha256=rendered["binding_receipt_sha256"],
+        target_root=target,
+        expected_target_snapshot_sha256=payload_report["target_snapshot_sha256"],
+    )
+    assert verified["context"]["release_id"] == "v3-test-rc2"
+    assert verified["receipt_context"]["release_id"] == "v3-test-rc1"
+    with pytest.raises(StaticExternalStagingError, match="context/payload mismatch"):
+        staging_module.verify_static_external_release_binding(
+            release1,
+            expected_release_manifest_sha256=release1_sha,
+            binding_receipt=binding_path,
+            expected_binding_receipt_sha256=rendered["binding_receipt_sha256"],
+            target_root=target,
+        )
+
+
+def test_release_binding_fails_if_shared_payload_receipt_is_rewritten(
+    tmp_path: Path,
+) -> None:
+    release, release_sha, _paths, target, _payload_report = _stage(tmp_path)
+    binding_path = (
+        tmp_path / "deployment/runtime-inputs" / staging_module.RELEASE_BINDING_RECEIPT_NAME
+    )
+    binding_bytes, rendered = staging_module.render_static_external_release_binding(
+        release,
+        expected_release_manifest_sha256=release_sha,
+        target_root=target,
+        binding_receipt=binding_path,
+    )
+    _write(binding_path, binding_bytes)
+    payload_receipt = json.loads((target / RECEIPT_NAME).read_text(encoding="utf-8"))
+    payload_receipt["context"]["release_id"] = "v3-tampered"
+    _write_json(target / RECEIPT_NAME, payload_receipt)
+
+    with pytest.raises(StaticExternalStagingError, match="context/payload mismatch"):
+        staging_module.verify_static_external_release_binding(
+            release,
+            expected_release_manifest_sha256=release_sha,
+            binding_receipt=binding_path,
+            expected_binding_receipt_sha256=rendered["binding_receipt_sha256"],
+            target_root=target,
+        )
+
+
 def test_deploy_cross_verification_rejects_wrong_context_and_paths(tmp_path: Path) -> None:
     release, release_sha, _paths, target, report = _stage(tmp_path)
     summaries = {row["logical_id"]: row for row in report["logical_inputs"]}

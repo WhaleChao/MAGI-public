@@ -51,7 +51,7 @@ from scripts.ops import resummary_legacy_judgments_quality as legacy  # noqa: E4
 
 DEFAULT_REPORT = get_runtime_dir() / "judgment_summary_cleanup_latest.json"
 DEFAULT_BACKUP_ROOT = get_runtime_dir() / "backups" / "judgment_summary_cleanup"
-APPLY_TOKEN = "CLEAR-UNUSABLE-SUMMARIES"
+APPLY_CONFIRMATION_PHRASE = "CLEAR-UNUSABLE-SUMMARIES"
 
 
 def _source_sha(text: object) -> str:
@@ -221,8 +221,10 @@ def main() -> int:
     parser.add_argument("--json-out", default=str(DEFAULT_REPORT))
     parser.add_argument("--backup-root", default=str(DEFAULT_BACKUP_ROOT))
     args = parser.parse_args()
-    if args.apply and args.confirm_token != APPLY_TOKEN:
-        raise SystemExit(f"--apply requires --confirm-token {APPLY_TOKEN}")
+    if args.apply and args.confirm_token != APPLY_CONFIRMATION_PHRASE:
+        raise SystemExit(
+            f"--apply requires --confirm-token {APPLY_CONFIRMATION_PHRASE}"
+        )
 
     staged.LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
     lock = staged.LOCK_PATH.open("a+", encoding="utf-8")

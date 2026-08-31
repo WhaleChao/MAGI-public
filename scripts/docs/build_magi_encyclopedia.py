@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the rc641 MAGI maintenance encyclopedia and machine-readable source index."""
+"""Build the rc643 MAGI maintenance encyclopedia and machine-readable source index."""
 
 from __future__ import annotations
 
@@ -20,14 +20,13 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-MANUAL_VERSION = "rc641"
-RELEASE_ID = "v3-20260823-rc641"
-SOURCE_COMMIT = "92b6ba472c471ccaa2a555dd6aed1298dc2c4bcb"
-# These two values deliberately remain null until a fresh formal promotion
-# exists.  The source manual must never copy an older release's evidence into rc641.
-RELEASE_MANIFEST_SHA = None
-FORMAL_CHAIN_SHA = None
-BUILD_DATE = "2026-08-23"
+MANUAL_VERSION = "rc643"
+RELEASE_ID = "v3-20260831-rc643-r75-hotfix7-r1"
+SOURCE_COMMIT = "967beb656e93448ea503c92a8fde51b94b129637"
+RELEASE_MANIFEST_SHA = "96ab97392dfbdbf46cb895e92c0db725d80ef53202ad5568dad65bdf76cd7829"
+FORMAL_CHAIN_SHA = "b6f29aeda6062654317231c2bbb73ee6d382bbaecd2bc88f84e51d3cfb89dbb6"
+RELEASE_STATUS = "active_production"
+BUILD_DATE = "2026-08-31"
 
 MANUAL_BASENAME = f"MAGI_V3_維修百科全書_{MANUAL_VERSION}"
 INDEX_BASENAME = f"MAGI_V3_原始碼索引_{MANUAL_VERSION}.json"
@@ -372,6 +371,9 @@ FAULTS = [
     ("F-033", "指定判決取得官方全文後仍因『主文無法辨識』未納入", "司法院將『事 實』展平後可直接連全形匿名代碼，例如『事 實Ａ０７…』；舊主文邊界只允許少數漢字編號，把合法官方全文誤判為 main_section_unrecognized。同時本機 MCP 可選 runtime 實際未安裝，遠端搜尋又遭 WAF 阻擋。", "主文 parser 改以結構性段落標題分界，接受全形匿名代碼但不放寬句內的一般『事實／理由』文字。本機 MCP 部署上游 immutable commit，保留法院篩選，並以 Playwright Chromium 只取司法院 WAF cookie；cookie 0600，瀏覽器不常駐。", "PCDM,114,侵訴,59,20260812,1 實際全文驗證後，梁世樺為末位列名法官，主文刑度可統計且排除碼為空。官方 MCP 79/79；閱卷／筆錄／法扶安裝後 LIVE 20/20；Playwright cleanup 無殘留程序。", "api/sentencing_trends.py；api/osc/taiwan_legal_mcp.py；tests/test_sentencing_trends.py；lawchat-oss/mcp-taiwan-legal-db"),
     ("F-034", "NVIDIA 背景額度耗盡被誤報為排程失敗與健康紅燈", "新的 provider 授權層會回傳 background_heavy_authorization_budget_exhausted；舊週末彙整與 cron 結果政策只辨識 nim_daily_budget_exceeded／nim_background_budget_reserved，因此把可預期的每日額度耗盡重試到上限。", "將三種額度標記統一分類為 terminal schedule deferral；scheduler 啟動時以官方 reconcile 將既有同類失敗改列 deferred，不刪除證據、不假造成功，也不繞過每日額度。只有公開裁判全文可依使用者授權原文送 NVIDIA；案件、當事人檔案及閱卷／筆錄／法扶資料仍禁止外送。", "三種 marker 都產生 deferred、零 false failure；真正 provider error 仍失敗。額度恢復後由正式排程續跑，健康層顯示等待額度而非功能故障。", "scripts/weekend_resummary.py；skills/ops/cron_result_policy.py；tests/test_weekend_resummary_budget_semantics.py"),
     ("F-035", "影片範例單調，且顯示理解命令卻沒有真正套用", "第一版只用 synthetic 測試畫面；後續雖能產文字分鏡，但純文字路徑曾忽略已確認的倒序、轉場、運鏡與音訊設定。上游字幕範例又依賴本機 ffmpeg 未提供的 libass filter。", "改用 Pillow 產生繁中 overlay，允許 1～5 份 JPG／PNG／WebP／MP4／MOV 本機素材；中文指令先解析成 exact edit plan 並回顯，成片端點重算並比對 plan SHA。素材與純文字路徑都套用相同順序、淡化或直接切換、平滑或固定畫面、配樂或靜音。停用 updater、remote fetch、CapCut 與 publish；保留 CSRF、大小／速率／並行／deadline／RSS／process-group cleanup。", "真實圖片、圖片＋MP4、純文字四控制與公開 endpoint 全數重編碼為 1080×1920 H.264/AAC；重新 ffprobe、逐幕畫質抽樣、素材集合／storyboard／plan／output SHA、暫存清除與 child absence 均通。", "api/blueprints/video_studio.py；magi_v3/video_autopilot_adapter.py；templates/video_studio.html；tests/test_video_studio_blueprint.py"),
+    ("F-036", "筆錄同步最後回傳 success=true、return code 0，排程仍顯示執行失敗", "同步器會把個別案件已捕捉且可重試的 traceback 寫入 stderr，舊 cron 結果政策只要看到 traceback 就覆蓋最後的結構化成功 receipt，將 partial_retry_pending 誤判為整體失敗。", "結果政策先驗證程序 return code 與最後一筆完整 JSON receipt；return code 0 且 receipt success=true 時，保留 partial／retry_pending 業務狀態但排程終態為 success。非零 return code、未捕捉 traceback、缺 receipt 或 success=false 仍 fail closed。", "production job_transcript_sync 於 active RC643/R75 完成：last_success=true、last_status=success、return code 0、error 空；真正失敗反例與 65 個 focused policy tests 仍通過。", "skills/ops/cron_result_policy.py；tests/test_cron_result_policy.py；cron_state.json receipt"),
+    ("F-037", "active release 已是新版本，但 commercial readiness／release gate 仍讀 candidate 路徑或舊 release 證據", "production deploy renderer 已將 LaunchAgent 綁定 canonical installed release；舊 evidence compiler 卻仍要求 candidate root，造成同一個合法封裝同時被部署器接受、證據閘門拒絕。latest 相容 JSON 若未綁 active release，也會讓歷史失敗污染現行紅燈。", "Evidence compiler 在 production mode 驗 canonical installed root、release marker、manifest 與 candidate-equivalent immutable 0555 identity；release gate 重新計算 installed marker／manifest 並要求 deployment_mode=production。active-release pointer 才是 latest 真相，舊 JSON 僅為歷史投影。", "canonical tamper、錯 release、錯 manifest、candidate/production 混綁全部拒絕；RC643/R75 最終 gate 14/14 GO，missing／failed／invalid 全空，原子切換後 active marker 與三角色 executable 均指向同一 installed release。", "scripts/v3_evidence_compiler.py；scripts/v3_release_gate.py；tests/v3/test_evidence_compiler.py；release-gate-final-r3.json"),
+    ("F-038", "網頁維修百科仍顯示 rc641，且過期驗證資料持續占用磁碟", "RC643 維修百科是在 R75 hotfix2 完成不可變封裝與切換後才提交；線上 `/manual` 只能讀 active package，因此仍沿用封裝內 rc641 allowlist 與資產。另有已被 r75 取代的 r60～r74 campaign／candidate 報告及逾期臨時驗證資料未依生命週期退役。", "建立 R75 docs-only 不可變維修封裝，將 `/manual` 四個固定 allowlist 資產更新為 rc643；不直接修改 installed release。清理器先解析 active marker 與 rollback 保護清單，只刪除明確版本／前綴、由本機帳號擁有且未被程序使用的 superseded 驗證樹，遇到 symlink、owner、scope 或 active identity 異常即 fail closed。", "清理 receipt 證明永久移除 317 項、15,582,344,938 bytes；r59、原始 R75、hotfix2 與新文件封裝均保留。文件路由 focused regression、PDF 結構／頁面渲染、封裝 SHA、登入保護與切換後 LIVE `/manual` 檢查全部通過後才更新 active pointer。", "scripts/docs/build_magi_encyclopedia.py；api/blueprints/dashboard_pages.py；magi_v3/manual_assets/*rc643*；cleanup receipt；post-cutover manual probe"),
 ]
 
 
@@ -401,7 +403,7 @@ def build_markdown(root: Path, repo: str, records: list[FileRecord], routes: lis
     parts: list[str] = []
     parts += [
         "# MAGI V3 維修百科全書\n",
-        f"**基準版本：** `{RELEASE_ID}`<br>\n**來源 commit：** `{SOURCE_COMMIT}`<br>\n**文件狀態：** source candidate；release manifest／formal chain 必須由 fresh {MANUAL_VERSION} promotion 產生，禁止沿用舊版證據<br>\n**文件日期：** {BUILD_DATE}<br>\n**GitHub：** `WhaleChao/{repo}` / immutable commit `{SOURCE_COMMIT}`\n",
+        f"**基準版本：** `{RELEASE_ID}`<br>\n**來源 commit：** `{SOURCE_COMMIT}`<br>\n**文件狀態：** active production；release manifest `{RELEASE_MANIFEST_SHA}`，formal gate `{FORMAL_CHAIN_SHA}`<br>\n**文件日期：** {BUILD_DATE}<br>\n**GitHub：** `WhaleChao/{repo}` / immutable commit `{SOURCE_COMMIT}`\n",
         "> 本書的目標不是讓你背程式，而是讓你能從「現象」追到「入口 → owner → state → 外部邊界 → receipt → health」，並知道什麼可以安全修、什麼必須停手。全文不含密碼、Cookie、token、案件內容或可逆個資。\n",
         "## 文件使用方式\n",
         "1. 先查第 20 章的總決策樹，確認是功能故障、等待、降級、資料不一致或驗證器問題。\n2. 到對應功能章找連動表與權威狀態。\n3. 只讀蒐證後，再依第 21 章修復；不要先 kill、刪 lock、改 cron JSON 或清 checkpoint。\n4. 任何原始碼修改都建立新 commit、新 release、新證據鏈；installed release 不就地修改。\n5. 附錄的來源索引列出 SHA、行數與符號；完整內容以不可變 source commit 為準。\n",
@@ -800,7 +802,7 @@ def write_index(path: Path, root: Path, records: list[FileRecord], routes: list[
         "source_commit": SOURCE_COMMIT,
         "release_manifest_sha256": RELEASE_MANIFEST_SHA,
         "formal_chain_sha256": FORMAL_CHAIN_SHA,
-        "release_status": "source_candidate",
+        "release_status": RELEASE_STATUS,
         "generated_at": BUILD_DATE,
         "root_is_repository_relative": True,
         "summary": {

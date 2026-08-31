@@ -164,6 +164,33 @@ def test_snapshot_blocks_v2_files_missing_from_release(tmp_path: Path) -> None:
         )
 
 
+def test_snapshot_blocks_model_switch_schedule_policy_conflict(tmp_path: Path) -> None:
+    release = _release(tmp_path)
+    python = _python(tmp_path)
+    source = tmp_path / "cron_jobs.json"
+    source.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "job_omlx_switch_night",
+                    "cron": "10 17 * * *",
+                    "command": "@MAGI model night",
+                    "enabled": True,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(CronSnapshotBlocked, match="model profile policy"):
+        render_snapshot(
+            source=source.resolve(),
+            release_root=release,
+            runtime_root=tmp_path / "runtime-root",
+            python_runtime=python,
+        )
+
+
 def test_snapshot_blocks_source_path_replacement_after_descriptor_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

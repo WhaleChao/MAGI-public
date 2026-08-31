@@ -267,11 +267,25 @@ def load_gate_config(path: str | Path) -> dict[str, Any]:
         raise GateConfigError("gate file must define automatic_no_go and required_evidence lists")
     if not required or not all(isinstance(item, str) and item for item in required):
         raise GateConfigError("gate file required_evidence must be a non-empty list of names")
-    mandatory_no_go = {
-        "more_than_one_writer_or_scheduler_owner",
-        "v2_process_or_release_owner_still_active_before_v3_start",
-        "v2_port_scheduler_writer_or_model_owner_not_released",
-    }
+    source_contract = payload.get("source_contract")
+    if not isinstance(source_contract, dict):
+        raise GateConfigError("gate file must define a source_contract object")
+    legacy_v2 = source_contract.get("legacy_v2_validation") != "disabled"
+    mandatory_no_go = {"more_than_one_writer_or_scheduler_owner"}
+    if legacy_v2:
+        mandatory_no_go.update(
+            {
+                "v2_process_or_release_owner_still_active_before_v3_start",
+                "v2_port_scheduler_writer_or_model_owner_not_released",
+            }
+        )
+    else:
+        mandatory_no_go.update(
+            {
+                "previous_v3_release_owner_not_released",
+                "current_v3_or_previous_v3_rollback_artifact_not_ready",
+            }
+        )
     missing = sorted(mandatory_no_go - {str(item) for item in no_go})
     if missing:
         raise GateConfigError(f"gate file is missing single-active no-go rules: {', '.join(missing)}")

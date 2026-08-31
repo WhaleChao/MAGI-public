@@ -308,12 +308,12 @@ def _extract_pdf(path: Path) -> Dict:
     except Exception as e:
         logger.debug("pymupdf failed for %s: %s", path, e)
 
-    # Fallback: PyPDF2
+    # Fallback: pypdf
     try:
-        import PyPDF2
-        with _time_limit(PDF_EXTRACTOR_TIMEOUT_SEC, "pypdf2"):
+        import pypdf
+        with _time_limit(PDF_EXTRACTOR_TIMEOUT_SEC, "pypdf"):
             with open(str(path), "rb") as f:
-                reader = PyPDF2.PdfReader(f)
+                reader = pypdf.PdfReader(f)
                 page_count = len(reader.pages)
                 texts = []
                 for page in reader.pages:

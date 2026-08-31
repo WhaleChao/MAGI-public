@@ -1213,6 +1213,7 @@ def _run_arm_child(
             "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
             "PYTHONPATH": str(REPO_ROOT),
             "PYTHONDONTWRITEBYTECODE": "1",
+            "PYTHONPYCACHEPREFIX": "/dev/null",
             "PYTHONHASHSEED": "0",
             "HOME": str(sandbox),
             "TMPDIR": str(sandbox),

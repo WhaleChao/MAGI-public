@@ -121,16 +121,30 @@ def test_pre_cutover_uses_daytime_window_with_end_exclusive(
     assert probe.observed[0][1] is expected
 
 
-def safe_snapshot(*, ambiguous: bool = False, errors=()) -> Snapshot:
+def safe_snapshot(
+    *,
+    release: str = "v3",
+    ambiguous: bool = False,
+    errors=(),
+) -> Snapshot:
     return Snapshot(
-        owners=(Owner("v2", "release", "v2:runtime", "test", pid=123, ambiguous=ambiguous),),
+        owners=(
+            Owner(
+                release,
+                "release",
+                f"{release}:current-production",
+                "test",
+                pid=123,
+                ambiguous=ambiguous,
+            ),
+        ),
         probe_errors=tuple(errors),
         coverage=frozenset({"process", "pidfile", "port", "launchd", "ownership"}),
         observed_at=NOW.isoformat(),
     )
 
 
-def fixture(tmp_path: Path):
+def fixture(tmp_path: Path, *, legacy_v2: bool = False):
     gates = tmp_path / "config" / "gates.json"
     gates.parent.mkdir()
     gates.write_bytes((ROOT / "config" / "v3_cutover_gates.json").read_bytes())
@@ -145,12 +159,24 @@ def fixture(tmp_path: Path):
     # is enabled only when the fixture explicitly opts into the rc110 policy.
     fixture_gates.pop("conditional_daytime_window", None)
     fixture_gates.pop("conditional_daytime_authorization_required", None)
+    if legacy_v2:
+        fixture_gates["source_contract"]["legacy_v2_validation"] = "enabled"
+        fixture_gates["automatic_no_go"] = list(
+            dict.fromkeys(
+                [
+                    *fixture_gates["automatic_no_go"],
+                    "v2_process_or_release_owner_still_active_before_v3_start",
+                    "v2_port_scheduler_writer_or_model_owner_not_released",
+                ]
+            )
+        )
     write_json(gates, fixture_gates)
     gate_hash = digest(gates)
     context = ExpectedContext("campaign-final", "c" * 64, "mac-mini-01", gate_hash)
 
     campaign_config = json.loads((ROOT / "config" / "v3_validation_campaign.json").read_text())
     campaign_config["armed"] = True
+    campaign_config["production_release"] = "v2" if legacy_v2 else "v3"
     campaign_config_path = tmp_path / "config" / "campaign.json"
     write_json(campaign_config_path, campaign_config)
 
@@ -172,7 +198,9 @@ def fixture(tmp_path: Path):
             "schema_version": 1,
             "decision": "GO",
             "fail_closed": True,
-            "required_count": 28,
+            "required_count": len(
+                json.loads(gates.read_text(encoding="utf-8"))["required_evidence"]
+            ),
             "passed": json.loads(gates.read_text(encoding="utf-8"))["required_evidence"],
             "missing": [],
             "failed": [],
@@ -450,6 +478,26 @@ def fixture(tmp_path: Path):
     accounting_credentials = static_target / "accounting-credentials.json"
     env_file = static_target / ".env"
     static_receipt = static_target / static_external.RECEIPT_NAME
+    static_receipt_sha256 = static_report["receipt_sha256"]
+    static_release_receipt: Path | None = None
+    if not legacy_v2:
+        static_release_receipt = (
+            deploy_root
+            / "runtime-inputs"
+            / static_external.RELEASE_BINDING_RECEIPT_NAME
+        )
+        binding_bytes, binding_report = (
+            static_external.render_static_external_release_binding(
+                manifest,
+                expected_release_manifest_sha256=release_manifest_sha256,
+                target_root=static_target,
+                binding_receipt=static_release_receipt,
+            )
+        )
+        static_release_receipt.write_bytes(binding_bytes)
+        static_release_receipt.chmod(0o600)
+        static_receipt = static_release_receipt
+        static_receipt_sha256 = binding_report["binding_receipt_sha256"]
     external_inputs = {
         "env_file": str(env_file.resolve()),
         "env_file_sha256": digest(env_file),
@@ -495,7 +543,7 @@ def fixture(tmp_path: Path):
         "nas_ocr_queue_db_file": str(ocr_queue.resolve()),
         "nas_ocr_queue_db_mode": f"{ocr_queue.stat().st_mode & 0o777:04o}",
         "static_external_receipt": str(static_receipt.resolve()),
-        "static_external_receipt_sha256": static_report["receipt_sha256"],
+        "static_external_receipt_sha256": static_receipt_sha256,
         "static_external_source_snapshot_sha256": static_report[
             "source_snapshot_sha256"
         ],
@@ -621,6 +669,7 @@ def fixture(tmp_path: Path):
     artifact_files = [
         cron_snapshot,
         python_runtime_manifest,
+        *([static_release_receipt] if static_release_receipt is not None else []),
         ownership_manifest,
         *launchagents,
     ]
@@ -777,6 +826,7 @@ def fixture(tmp_path: Path):
         "mutable_target": mutable_target,
         "mutable_receipt": mutable_receipt,
         "final_pre_cutover_report": final_pre_cutover_report,
+        "legacy_v2": legacy_v2,
     }
 
 
@@ -800,7 +850,9 @@ def make_preflight(data, **overrides):
         clock=lambda: NOW,
         mount_checker=lambda path: True,
         disk_usage=lambda path: Disk(200 * 1024**3, 1, 199 * 1024**3),
-        snapshot_collector=lambda: safe_snapshot(),
+        snapshot_collector=lambda: safe_snapshot(
+            release="v2" if data["legacy_v2"] else "v3"
+        ),
     )
     if overrides.get("execution_purpose", "final_cutover") == "final_cutover":
         values.update(
@@ -845,18 +897,15 @@ def test_all_read_only_attestations_are_machine_readable_go(tmp_path: Path) -> N
     assert report["network_access_performed"] is False
     assert report["backup_performed"] is False
     assert report["restore_performed"] is False
-    mutable = next(
-        row for row in report["checks"] if row["name"] == "mutable_state_handoff"
-    )
-    assert mutable["detail"]["status"] == "verified"
-    assert report["cutover_plan"] == {
-        "path": str(data["cutover_plan"].resolve()),
-        "sha256": data["cutover_plan_sha256"],
-    }
+    check_names = {row["name"] for row in report["checks"]}
+    assert "mutable_state_handoff" not in check_names
+    assert "pdf_namer_handoff_precopy" not in check_names
+    assert "previous_v3_only_ownership" in check_names
+    assert "cutover_plan" not in report
 
 
 def test_final_cutover_cannot_omit_mutable_state_plan_evidence(tmp_path: Path) -> None:
-    data = fixture(tmp_path)
+    data = fixture(tmp_path, legacy_v2=True)
     report = run_preflight(
         data,
         cutover_plan_path=None,
@@ -891,15 +940,9 @@ def test_atomic_drill_exemption_is_explicit_and_not_a_final_exemption(
 
     report = run_preflight(data, execution_purpose="atomic_drill")
 
-    mutable = next(
-        row for row in report["checks"] if row["name"] == "mutable_state_handoff"
-    )
     assert report["decision"] == "GO_FOR_CUTOVER_DRILL_ONLY"
-    assert mutable["ok"] is True
-    assert mutable["detail"] == {
-        "status": "excluded_for_atomic_drill",
-        "final_cutover_exemption": False,
-        "contains_business_payload": False,
+    assert "mutable_state_handoff" not in {
+        row["name"] for row in report["checks"]
     }
 
 
@@ -919,7 +962,7 @@ def test_mutable_state_final_gate_rejects_tamper_and_source_drift_without_payloa
     tmp_path: Path,
     tamper: str,
 ) -> None:
-    data = fixture(tmp_path)
+    data = fixture(tmp_path, legacy_v2=True)
     overrides = {}
     secret = "private-party-state-must-not-leak"
     if tamper == "plan_hash":
@@ -955,7 +998,7 @@ def test_mutable_state_final_gate_rejects_tamper_and_source_drift_without_payloa
 
 
 def test_atomic_drill_only_gate_cannot_be_reused_for_final_cutover(tmp_path: Path) -> None:
-    data = fixture(tmp_path)
+    data = fixture(tmp_path, legacy_v2=True)
     gates = json.loads(data["gates"].read_text(encoding="utf-8"))
     excluded = [
         "atomic_release_switch_and_cold_rollback_drill_passed",
@@ -977,7 +1020,7 @@ def test_atomic_drill_only_gate_cannot_be_reused_for_final_cutover(tmp_path: Pat
     final = run_preflight(data, execution_purpose="final_cutover")
 
     assert drill["decision"] == "GO_FOR_CUTOVER_DRILL_ONLY"
-    assert drill["gate_stage"] == "cutover_drill_26_of_28"
+    assert drill["gate_stage"] == "cutover_drill_12_of_14"
     assert drill["excluded_evidence"] == excluded
     assert final["decision"] == "NO_GO"
     assert "release_gate_evidence" in final["gaps"]
@@ -986,7 +1029,7 @@ def test_atomic_drill_only_gate_cannot_be_reused_for_final_cutover(tmp_path: Pat
 def test_isolated_deployment_is_legal_for_atomic_drill_but_not_final_cutover(
     tmp_path: Path,
 ) -> None:
-    data = fixture(tmp_path)
+    data = fixture(tmp_path, legacy_v2=True)
     deployment = json.loads(data["deploy_manifest"].read_text(encoding="utf-8"))
     deployment["deployment_mode"] = "isolated_live_validation"
     write_json(data["deploy_manifest"], deployment)
@@ -1034,7 +1077,7 @@ def test_pre_cutover_revalidates_external_deployment_bindings(
     tmp_path: Path,
     tamper: str,
 ) -> None:
-    data = fixture(tmp_path)
+    data = fixture(tmp_path, legacy_v2=True)
     deploy_root = data["deploy_manifest"].parent
     if tamper == "cron_snapshot":
         (deploy_root / "runtime-inputs" / "cron_jobs.v3.json").write_text(
@@ -1108,7 +1151,7 @@ def test_pre_cutover_rejects_internally_consistent_nonexact_named_state_binding(
 
 
 def test_missing_pdf_namer_precopy_evidence_blocks_cutover_without_case_data(tmp_path: Path) -> None:
-    data = fixture(tmp_path)
+    data = fixture(tmp_path, legacy_v2=True)
     data["pdf_handoff_manifest"].unlink()
 
     report = run_preflight(data)
@@ -1120,7 +1163,7 @@ def test_missing_pdf_namer_precopy_evidence_blocks_cutover_without_case_data(tmp
 
 
 def test_pdf_namer_source_may_keep_learning_after_precopy_until_v2_zero(tmp_path: Path) -> None:
-    data = fixture(tmp_path)
+    data = fixture(tmp_path, legacy_v2=True)
     write_json(
         data["pdf_source"] / "training_data.json",
         [{"synthetic": "private-case-value"}, {"synthetic": "new-live-learning"}],
@@ -1137,7 +1180,7 @@ def test_pdf_namer_precopy_destination_must_be_complete_private_and_untampered(
     tmp_path: Path,
     tamper: str,
 ) -> None:
-    data = fixture(tmp_path)
+    data = fixture(tmp_path, legacy_v2=True)
     target = data["pdf_destination"] / "training_data.json"
     if tamper == "bytes":
         target.write_text("[]", encoding="utf-8")
@@ -1381,7 +1424,7 @@ def test_symlinked_backup_artifact_is_no_go(tmp_path: Path) -> None:
 def test_ambiguous_owner_or_stale_pidfile_is_no_go(tmp_path: Path, snapshot: Snapshot) -> None:
     data = fixture(tmp_path)
     report = run_preflight(data, snapshot_collector=lambda: snapshot)
-    assert "v2_only_ownership" in report["gaps"]
+    assert "previous_v3_only_ownership" in report["gaps"]
 
 
 def test_noncertifying_campaign_and_no_go_release_gate_are_rejected(tmp_path: Path) -> None:
@@ -1507,6 +1550,62 @@ def test_missing_required_paths_low_disk_and_unmounted_nas_are_no_go(tmp_path: P
         disk_usage=lambda path: Disk(10 * 1024**3, 1, 9 * 1024**3),
     )
     assert {"database_paths", "nas_mounts", "disk_free"} <= set(report["gaps"])
+
+
+def test_release_bound_disk_capacity_replaces_fixed_80_gib_false_blocker(
+    tmp_path: Path,
+) -> None:
+    data = fixture(tmp_path)
+    report = run_preflight(
+        data,
+        disk_usage=lambda _path: Disk(200 * 1024**3, 183 * 1024**3, 17 * 1024**3),
+    )
+
+    assert "disk_capacity_policy" not in report["gaps"]
+    assert "disk_free" not in report["gaps"]
+    detail = next(
+        row["detail"] for row in report["checks"] if row["name"] == "disk_free"
+    )
+    assert detail["policy"] == "release_bound_capacity"
+    assert detail["absolute_floor_gib"] == 16.0
+    assert detail["operational_headroom_gib"] == 8.0
+    assert detail["material_multiplier"] == 4.0
+    assert detail["material_bytes"] > 0
+    assert detail["minimum_gb"] == 16.0
+
+
+def test_release_bound_disk_capacity_still_fails_below_absolute_floor(
+    tmp_path: Path,
+) -> None:
+    data = fixture(tmp_path)
+    report = run_preflight(
+        data,
+        disk_usage=lambda _path: Disk(200 * 1024**3, 185 * 1024**3, 15 * 1024**3),
+    )
+
+    assert "disk_free" in report["gaps"]
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"absolute_floor_gib": 15},
+        {"operational_headroom_gib": 7},
+        {"material_multiplier": 3},
+        {"material_scope": ["candidate_release"]},
+    ],
+)
+def test_release_bound_disk_capacity_policy_cannot_be_silently_weakened(
+    tmp_path: Path,
+    change: dict,
+) -> None:
+    data = fixture(tmp_path)
+    preflight = make_preflight(data)
+    policy = json.loads(data["gates"].read_text())["disk_capacity_policy"]
+    policy.update(change)
+
+    with pytest.raises(PreCutoverError, match="capacity policy"):
+        preflight._disk_capacity_requirement(policy)
 
 
 def test_unarmed_campaign_configuration_is_no_go(tmp_path: Path) -> None:

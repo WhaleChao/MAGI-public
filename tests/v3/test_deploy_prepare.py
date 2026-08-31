@@ -956,7 +956,17 @@ def test_prepare_binds_all_roles_release_identity_and_ownership_with_hashes(
     assert manifest["ownership_manifest"] == str(runtime / deploy.OWNERSHIP_MANIFEST_NAME)
     assert manifest["generated_at"] == generated_at.isoformat()
     assert (runtime / "shared" / "external" / static_external.RECEIPT_NAME).is_file()
-    static_receipt = runtime / "shared" / "external" / static_external.RECEIPT_NAME
+    static_payload_receipt = (
+        runtime / "shared" / "external" / static_external.RECEIPT_NAME
+    )
+    static_payload_receipt_sha = hashlib.sha256(
+        static_payload_receipt.read_bytes()
+    ).hexdigest()
+    static_receipt = (
+        staging
+        / "runtime-inputs"
+        / static_external.RELEASE_BINDING_RECEIPT_NAME
+    )
     static_receipt_sha = hashlib.sha256(static_receipt.read_bytes()).hexdigest()
     assert manifest["static_external_receipt"] == ownership[
         "static_external_receipt"
@@ -967,6 +977,14 @@ def test_prepare_binds_all_roles_release_identity_and_ownership_with_hashes(
     assert manifest["static_external_target_snapshot_sha256"] == ownership[
         "static_external_target_snapshot_sha256"
     ]
+    static_binding = json.loads(static_receipt.read_text(encoding="utf-8"))
+    assert static_binding["schema"] == static_external.RELEASE_BINDING_SCHEMA
+    assert static_binding["context"]["release_id"] == "v3-test-release"
+    assert static_binding["payload_receipt"] == str(static_payload_receipt)
+    assert static_binding["payload_receipt_sha256"] == static_payload_receipt_sha
+    assert "runtime-inputs/static-external-release-receipt.json" in {
+        row["path"] for row in manifest["artifacts"]
+    }
     assert manifest["external_inputs"]["env_file"] == str(
         runtime / "shared" / "external" / ".env"
     )
@@ -1224,6 +1242,8 @@ def test_prepare_atomically_publishes_with_final_absolute_bindings(
         assert environment["MAGI_V3_PYTHON_RUNTIME_MANIFEST"] == str(
             expected_runtime_manifest
         )
+        assert environment["PYTHONDONTWRITEBYTECODE"] == "1"
+        assert environment["PYTHONPYCACHEPREFIX"] == "/dev/null"
         assert plist["ProgramArguments"][0] == str(
             installed_release / "bin" / "magi-v3-python"
         )
@@ -1988,6 +2008,62 @@ def test_external_python_runtime_must_exist_and_symlink_target_is_hash_bound(
     assert environment["MAGI_V3_PYTHON_RUNTIME_SHA256"] == hashlib.sha256(
         real.read_bytes()
     ).hexdigest()
+
+
+def test_preinstalled_chromedriver_is_hash_bound_into_every_owner(
+    tmp_path: Path,
+    canonical_runtime_root: Path,
+) -> None:
+    release, executable = _release(tmp_path)
+    chromedriver = tmp_path / "runtime-inputs" / "chromedriver"
+    _write(chromedriver, "#!/bin/sh\nexit 0\n")
+    chromedriver.chmod(0o755)
+    expected_sha256 = hashlib.sha256(chromedriver.read_bytes()).hexdigest()
+    staging = tmp_path / "chromedriver-staging"
+
+    deploy.prepare_deployment(
+        release,
+        staging,
+        canonical_runtime_root,
+        executable,
+        chromedriver_path=chromedriver,
+    )
+
+    manifest = json.loads((staging / deploy.DEPLOY_MANIFEST_NAME).read_text())
+    assert manifest["external_inputs"]["chromedriver_path"] == str(chromedriver)
+    assert manifest["external_inputs"]["chromedriver_sha256"] == expected_sha256
+    assert manifest["external_inputs"]["chromedriver_mode"] == "0755"
+    for plist_path in (staging / "launchagents").glob("*.plist"):
+        environment = plistlib.loads(plist_path.read_bytes())["EnvironmentVariables"]
+        assert environment["MAGI_CHROMEDRIVER_PATH"] == str(chromedriver)
+        assert environment["MAGI_CHROMEDRIVER_SHA256"] == expected_sha256
+
+
+def test_preinstalled_chromedriver_rejects_symlink_and_non_executable(
+    tmp_path: Path,
+    canonical_runtime_root: Path,
+) -> None:
+    release, executable = _release(tmp_path)
+    driver = tmp_path / "driver-real"
+    _write(driver, "driver\n")
+    linked = tmp_path / "driver-linked"
+    linked.symlink_to(driver)
+    with pytest.raises(deploy.DeployPrepareBlocked, match="non-symlink"):
+        deploy.prepare_deployment(
+            release,
+            tmp_path / "linked-driver-staging",
+            canonical_runtime_root,
+            executable,
+            chromedriver_path=linked,
+        )
+    with pytest.raises(deploy.DeployPrepareBlocked, match="invalid types"):
+        deploy.prepare_deployment(
+            release,
+            tmp_path / "non-executable-driver-staging",
+            canonical_runtime_root,
+            executable,
+            chromedriver_path=driver,
+        )
 
 
 def test_external_cron_jobs_must_be_regular_json_list_with_unique_ids(

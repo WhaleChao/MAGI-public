@@ -113,6 +113,7 @@ def test_handoff_receipt_is_hash_only_and_does_not_claim_business_completion(tmp
     record = service.store.get(proposal.plan.plan_id, user_id="u-1", platform="LINE")
     assert record["receipt"]["handoff_success"] is True
     assert record["receipt"]["business_completion_attested"] is False
+    assert len(record["receipt"]["trace_id"]) == 32
     assert raw_reply not in service.store.path.read_bytes().decode("latin1", errors="ignore")
 
 

@@ -138,6 +138,7 @@ def _default_process_reader() -> tuple[ProcessRecord, ...]:
                 check=False,
                 capture_output=True,
                 text=True,
+                errors="replace",
                 timeout=timeout_seconds,
             )
             break

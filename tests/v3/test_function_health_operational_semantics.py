@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+
+from magi_v3.evidence_ledger import EvidenceEnvelope
 
 from scripts.ops.function_health_index import (
     _cron_occurrence_waiting_or_running,
@@ -116,6 +118,72 @@ def test_current_release_health_failure_remains_failed(tmp_path) -> None:
 
     assert result["status"] == "failed"
     assert result["contract"] == "ok"
+
+
+def _evidence(release_id: str, *, status_class: str, outcome: str) -> dict:
+    generated = datetime(2026, 8, 8, 6, 0, tzinfo=timezone.utc)
+    return EvidenceEnvelope.create(
+        release_id=release_id,
+        source_commit="a" * 40,
+        producer={"name": "fixture", "version": "2"},
+        validator={"name": "function-health", "version": "2"},
+        generated_at=generated,
+        expires_at=generated + timedelta(hours=2),
+        subject="production_live",
+        status_class=status_class,
+        outcome=outcome,
+        reason_code="fixture_outcome",
+        trace_id="b" * 32,
+        receipt={"ok": outcome != "failed"},
+    ).as_dict()
+
+
+def test_evidence_v2_predecessor_failure_cannot_red_light_active_release(tmp_path) -> None:
+    path = tmp_path / "production_live_envelope_latest.json"
+    path.write_text(
+        json.dumps(_evidence("v3-test-old", status_class="live_health", outcome="failed")),
+        encoding="utf-8",
+    )
+    result = evaluate_health_file(
+        path,
+        tmp_path,
+        datetime(2026, 8, 8, 7, 0, tzinfo=timezone.utc),
+        2,
+        active_release={
+            "release_id": "v3-test-current",
+            "release_root": str(tmp_path / "releases" / "v3-test-current"),
+        },
+    )
+    assert result["status"] == "superseded"
+    assert result["ok"] is True
+    assert result["contract"] == "evidence_envelope_v2"
+
+
+def test_evidence_v2_business_backlog_is_not_live_failure(tmp_path) -> None:
+    path = tmp_path / "business_readiness_envelope_latest.json"
+    path.write_text(
+        json.dumps(
+            _evidence(
+                "v3-test-current",
+                status_class="business_backlog",
+                outcome="attention",
+            )
+        ),
+        encoding="utf-8",
+    )
+    result = evaluate_health_file(
+        path,
+        tmp_path,
+        datetime(2026, 8, 8, 7, 0, tzinfo=timezone.utc),
+        2,
+        active_release={
+            "release_id": "v3-test-current",
+            "release_root": str(tmp_path / "releases" / "v3-test-current"),
+        },
+    )
+    assert result["status"] == "observed"
+    assert result["status_class"] == "business_backlog"
+    assert result["outcome"] == "attention"
 
 
 def test_unbound_health_failure_still_fails_closed(tmp_path) -> None:

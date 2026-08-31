@@ -1025,7 +1025,7 @@ def test_cases_ui_uses_unambiguous_status_and_laf_badge_labels():
     assert ">結案</button>" in js
     assert "一鍵結案" not in js
     assert "case-close-btn" in js
-    assert "file_manager.js?v=20260816-upload-idempotent-v1" in page
+    assert "file_manager.js?v=20260831-nas-listing-stability-v1" in page
     assert "tabs/cases.js?v=20260715-file-routes-v2" in page
     assert "case_type_display" in js
     assert "case_reason_display" in js

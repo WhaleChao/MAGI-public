@@ -232,7 +232,20 @@ def test_plan_hash_binds_mutable_roots_receipts_and_exact_context(tmp_path: Path
 
     gates = tmp_path / "gates.json"
     release_gate = tmp_path / "release-gate.json"
-    write_json(gates, {"schema_version": 1})
+    excluded = [
+        "atomic_release_switch_and_cold_rollback_drill_passed",
+        "human_go_approval_recorded",
+    ]
+    write_json(
+        gates,
+        {
+            "schema_version": 1,
+            "required_evidence": [
+                *(f"legacy-evidence-{index}" for index in range(12)),
+                *excluded,
+            ],
+        },
+    )
     write_json(release_gate, {"schema_version": 1})
     report = tmp_path / "pre.json"
     write_json(
@@ -240,14 +253,11 @@ def test_plan_hash_binds_mutable_roots_receipts_and_exact_context(tmp_path: Path
         {
             "gate_config_sha256": hashlib.sha256(gates.read_bytes()).hexdigest(),
             "execution_purpose": "atomic_drill",
-            "gate_stage": "cutover_drill_26_of_28",
+            "gate_stage": "cutover_drill_12_of_14",
             "decision": "GO_FOR_CUTOVER_DRILL_ONLY",
-            "required_evidence_count": 28,
-            "passed_evidence_count": 26,
-            "excluded_evidence": [
-                "atomic_release_switch_and_cold_rollback_drill_passed",
-                "human_go_approval_recorded",
-            ],
+            "required_evidence_count": 14,
+            "passed_evidence_count": 12,
+            "excluded_evidence": excluded,
             "release_gate_report": {
                 "path": str(release_gate.resolve()),
                 "sha256": hashlib.sha256(release_gate.read_bytes()).hexdigest(),

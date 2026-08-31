@@ -71,8 +71,23 @@ ALLOWLIST = [
 # Directories always skipped (non-.py or binary trees)
 # ---------------------------------------------------------------------------
 
-SKIP_DIRS = {".git", ".claude", "__pycache__", "node_modules", ".venv", "venv", ".agent",
-             "cache", "exports", "_autopilot_runs"}
+SKIP_DIRS = {
+    ".git",
+    ".claude",
+    "__pycache__",
+    "node_modules",
+    ".venv",
+    "venv",
+    ".runtime",
+    ".agent",
+    ".pytest_cache",
+    "site-packages",
+    "build",
+    "dist",
+    "cache",
+    "exports",
+    "_autopilot_runs",
+}
 
 
 def _is_comment(line: str) -> bool:

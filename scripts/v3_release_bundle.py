@@ -15,6 +15,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from magi_v3.supply_chain import SupplyChainError, validate_release_supply_chain_binding
+
 CONFIG_FILES = (
     "config/v3_capability_manifest.json",
     "config/v3_cutover_gates.json",
@@ -95,6 +97,7 @@ REQUIRED_PACKAGE_FILES = (
     "scripts/v3_validation/isolated_live_plan_builder.py",
     "scripts/v3_validation/isolated_live_evidence.py",
     "scripts/v3_validation/schemas/isolated-live-execution-plan.schema.json",
+    "scripts/ops/active_release_service_launcher.py",
     # Required by tests/v3 modules that import shared helpers through the
     # ``tests.v3`` package.  Without this marker, an installed third-party
     # ``tests`` package can shadow the sealed candidate's test tree.
@@ -112,6 +115,7 @@ REQUIRED_TEST_TARGETS = (
     "tests/test_autopilot_child_binding.py",
     "tests/test_archive_wizard_execute.py",
     "tests/test_balthasar_local_empty.py",
+    "tests/test_browser_security_policy_rc643.py",
     "tests/test_business_module_live_check.py",
     "tests/test_case_display_authoritative_name.py",
     "tests/test_case_statistics_tool.py",
@@ -138,6 +142,7 @@ REQUIRED_TEST_TARGETS = (
     "tests/test_forensic_transcript_live_command.py",
     "tests/test_forensic_transcript_verifier.py",
     "tests/test_generative_quality_live.py",
+    "tests/test_gemma_distill_schedule_semantics.py",
     "tests/test_golem_console.py",
     "tests/test_grounded_ai_heavy_fail_closed.py",
     "tests/test_heavy_translation_quality_live.py",
@@ -150,6 +155,7 @@ REQUIRED_TEST_TARGETS = (
     "tests/test_judicial_summary_quality.py",
     "tests/test_judgment_staged_backfill_rc223.py",
     "tests/test_laf_case_classifier.py",
+    "tests/test_laf_case_storage_authority.py",
     "tests/test_laf_gmail_dispatch_scan.py",
     "tests/test_laf_gmail_spam_restore.py",
     "tests/test_laf_portal_new_files_scan.py",
@@ -237,6 +243,7 @@ REQUIRED_TEST_TARGETS = (
     "tests/test_v3_laf_dedup_compat.py",
     "tests/test_web_runtime_blueprint.py",
     "tests/test_web_information_architecture.py",
+    "tests/v3/test_active_release_service_launcher.py",
     "tests/v3/test_host_singleton_migration.py",
 )
 # Packaging presence and test execution are deliberately separate contracts.
@@ -332,8 +339,6 @@ LOCAL_ONLY_RELEASE_FILES = frozenset(
         "casper_ecosystem/law_firm_orchestrators/osc/__init__.py",
         "config/launchagents/com.magi.omlx-nemotron-parse.plist",
         "config/launchagents/com.magi.osc-folder-helper.plist",
-        "config/launchagents/com.magi.paperclip-share-gateway.plist",
-        "config/launchagents/com.magi.paperclip-share-tunnel.plist",
     }
 )
 ORCHESTRATOR_MUTABLE_FILES = frozenset(
@@ -386,7 +391,7 @@ AUDITED_V2_ABSOLUTE_PATH_FILES = frozenset(
         "casper_ecosystem/law_firm_orchestrators/osc/folder_utils.py",
         "casper_ecosystem/law_firm_orchestrators/patch_file_review.py",
         "daemon.py",
-        "docs/architecture/v3/generated/v2_inventory.json",
+        "docs/architecture/v3/generated/runtime_inventory.json",
         "gui/magi_menubar.py",
         "scripts/magi_cli.sh",
         "scripts/magi_doctor.py",
@@ -456,6 +461,7 @@ SYNTHETIC_ABSOLUTE_PATH_FILES = frozenset(
         "skills/market-briefing/test_agent_live.py",
         "skills/market-briefing/test_committee_logic.py",
         "tests/test_admin_runtime_blueprint.py",
+        "tests/test_laf_case_storage_authority.py",
         "tests/test_osc_closed_case_archive.py",
         "tests/test_osc_folder_rename.py",
         "tests/test_osc_pdf_blueprint.py",
@@ -1173,12 +1179,19 @@ def build_release_bundle(
     commit: str | None = None,
     expected_snapshot_sha256: str | None = None,
     now: datetime | None = None,
+    require_supply_chain: bool = False,
 ) -> dict[str, Any]:
     """Copy the V3 allowlist and atomically mark a verified staging bundle complete."""
 
     if not RELEASE_ID_RE.fullmatch(release_id):
         raise ReleaseBundleError("release_id contains unsupported characters")
     source = source_root.resolve(strict=True)
+    try:
+        supply_chain = validate_release_supply_chain_binding(source)
+    except (OSError, SupplyChainError) as exc:
+        if require_supply_chain or (source / "config/v3_supply_chain_binding.json").exists():
+            raise ReleaseBundleError(f"release supply-chain binding failed: {exc}") from exc
+        supply_chain = {"schema": "magi.supply-chain-binding/v1", "ok": False, "reason": "not_bound"}
     _top_level, head = _git_identity(source)
     resolved_commit = commit or head
     if not COMMIT_RE.fullmatch(resolved_commit):
@@ -1226,6 +1239,7 @@ def build_release_bundle(
         "required_test_targets": list(REQUIRED_TEST_TARGETS),
         "test_execution_evidence": "not_evaluated_by_bundle_builder",
         "privacy_audit": privacy_audit,
+        "supply_chain_evidence": supply_chain,
         "excluded_components": sorted(EXCLUDED_COMPONENTS),
         "excluded_mutable_files": sorted(EXCLUDED_MUTABLE_FILES),
         "external_template_contract": {
@@ -1275,6 +1289,7 @@ def main() -> int:
             release_id=args.release_id,
             commit=args.commit,
             expected_snapshot_sha256=args.expected_snapshot_sha256,
+            require_supply_chain=True,
         )
     except (OSError, ReleaseBundleError) as exc:
         parser.exit(2, f"release bundle failed: {exc}\n")

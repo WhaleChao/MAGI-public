@@ -1123,15 +1123,12 @@ def merge_debt_pdfs(file_paths: list[str], output_path: Optional[str] = None,
     Args:
         file_paths: PDF 或 DOCX 檔案路徑列表
         output_path: 輸出路徑（預設自動產生）
-        add_bookmarks: 是否為合併後的 PDF 加入書籤（需要 PyPDF2 >= 2.0）
+        add_bookmarks: 是否為合併後的 PDF 加入書籤（需要 pypdf）
 
     Returns:
         輸出的 PDF 檔案路徑
     """
-    try:
-        from PyPDF2 import PdfReader, PdfWriter
-    except ImportError:
-        from pypdf import PdfReader, PdfWriter
+    from pypdf import PdfReader, PdfWriter
 
     if not output_path:
         stamp = datetime.now().strftime("%Y%m%d")

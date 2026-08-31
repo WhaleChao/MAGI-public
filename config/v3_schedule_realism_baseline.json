@@ -4,8 +4,8 @@
   "captured_at": "2026-08-11T04:32:52.869749+00:00",
   "source_evidence": {
     "job_definitions_path": "cron_jobs.json",
-    "job_definitions_sha256": "8c584cb38cf21a4df5d15b3da47dccbcc43b4d57b1ec20e4bbd7362eaacf539b",
-    "logical_definition_sha256": "dc2a462a21889c352a719797b0d323918311f80ef408c7d4f01cfb578709dca2",
+    "job_definitions_sha256": "707987a4a8689ca1fc3e6a94f77d2f092248eb41a2b9e3a14ab6420946097416",
+    "logical_definition_sha256": "e22a7fcdc0a3ad4aa292eba273c6e1c9dedf9bf7e75ea75db8b784550642aa85",
     "runtime_state_source": "cron_state.json",
     "runtime_state_sha256": "c3fda4c39b255f96e528fcfb5e48e944e6daf518668a69ad5ce689256d25ece2",
     "runtime_state_read_only_snapshot": true,
@@ -13,13 +13,13 @@
     "legacy_naive_timestamp_timezone": "Asia/Taipei",
     "observation_timestamps_normalized_to_utc": true,
     "observation_command_binding": "canonical_argv_sha256_v1",
-    "runtime_source_evidence_receipt_sha256": "9a1774286439cb1e9ace81c62749ad58d0a1f38664147219d02a711688fa3b6d"
+    "runtime_source_evidence_receipt_sha256": "f8927f9251232e47b294375d894c48e104bfa61207290847e2aa0ae630436b1c"
   },
   "coverage": {
-    "job_definitions": 105,
-    "enabled_job_definitions": 95,
+    "job_definitions": 106,
+    "enabled_job_definitions": 96,
     "enabled_jobs_with_successful_duration": 88,
-    "enabled_jobs_without_successful_duration": 7,
+    "enabled_jobs_without_successful_duration": 8,
     "minimum_samples_per_job_for_percentile": 3,
     "jobs_meeting_minimum_samples": 84,
     "global_duration_percentile_available": false
@@ -4666,7 +4666,7 @@
   "known_gaps": [
     {
       "code": "DURATION_COVERAGE_INCOMPLETE",
-      "affected_enabled_jobs": 7,
+      "affected_enabled_jobs": 8,
       "detail": "No successful last_duration_sec observation exists in the captured scheduler state."
     },
     {
@@ -4676,7 +4676,7 @@
     },
     {
       "code": "REPRESENTATIVE_BODY_COVERAGE_INCOMPLETE",
-      "affected_enabled_jobs": 86,
+      "affected_enabled_jobs": 88,
       "detail": "Only 8 exact, side-effect-free commands are approved for the offline sandbox."
     }
   ]

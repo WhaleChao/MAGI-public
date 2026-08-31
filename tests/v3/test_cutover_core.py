@@ -30,8 +30,12 @@ def owner(release: str | None, domain: str, identity: str, *, pid: int | None = 
 def test_repository_gate_file_contains_single_active_no_go_rules() -> None:
     root = Path(__file__).resolve().parents[2]
     payload = load_gate_config(root / "config" / "v3_cutover_gates.json")
-    assert "v2_process_or_release_owner_still_active_before_v3_start" in payload["automatic_no_go"]
-    assert "v2_port_scheduler_writer_or_model_owner_not_released" in payload["automatic_no_go"]
+    assert "previous_v3_release_owner_not_released" in payload["automatic_no_go"]
+    assert (
+        "current_v3_or_previous_v3_rollback_artifact_not_ready"
+        in payload["automatic_no_go"]
+    )
+    assert payload["source_contract"]["legacy_v2_validation"] == "disabled"
 
 
 def test_cutover_window_is_a_hard_timezone_aware_gate() -> None:
@@ -152,6 +156,7 @@ def test_gate_loader_fails_closed_when_single_active_rules_are_missing(tmp_path:
                 "window": {"start": "02:00", "end": "04:00"},
                 "automatic_no_go": [],
                 "required_evidence": ["required"],
+                "source_contract": {"legacy_v2_validation": "disabled"},
             }
         ),
         encoding="utf-8",

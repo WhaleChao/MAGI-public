@@ -55,7 +55,7 @@ def test_maintenance_manual_is_self_contained_and_uses_shared_theme_contract():
     # Verify the immutable asset that is actually bundled and served by
     # /manual.  The authoring copy under docs/ is useful to repository readers
     # but is intentionally outside the production release allowlist.
-    page = _read("magi_v3/manual_assets/MAGI_V3_維修百科全書_rc641.html")
+    page = _read("magi_v3/manual_assets/MAGI_V3_維修百科全書_rc643.html")
 
     assert '<html lang="zh-Hant" data-magi-theme="cyber">' in page
     assert 'localStorage.getItem("magi.ui.theme.v1")' in page
@@ -65,11 +65,15 @@ def test_maintenance_manual_is_self_contained_and_uses_shared_theme_contract():
     assert 'id="manual-toc"' in page
     assert 'href="/manual/pdf"' in page
     assert 'href="/manual/source-index.json"' in page
+    assert "v3-20260831-rc643-r75-hotfix7-r1" in page
+    assert "F-036｜筆錄同步最後回傳" in page
+    assert "F-037｜active" in page
+    assert "candidate root" in page
     assert "__MANUAL_BODY__" not in page
 
 
 def test_maintenance_manual_tables_wrap_without_hiding_cells_on_narrow_screens():
-    page = _read("magi_v3/manual_assets/MAGI_V3_維修百科全書_rc641.html")
+    page = _read("magi_v3/manual_assets/MAGI_V3_維修百科全書_rc643.html")
 
     assert "table-layout: fixed" in page
     assert "overflow-wrap: anywhere" in page

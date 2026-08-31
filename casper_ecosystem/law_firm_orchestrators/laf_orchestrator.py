@@ -291,6 +291,45 @@ def _load_workflow_provider_fixture() -> Tuple[Path, dict] | None:
     return root, payload
 
 
+def _resolve_schedule_fixture_case_folder_for_write(folder: str) -> str:
+    """Admit only the disposable attachment-retry case tree as writable.
+
+    Production storage authority remains unchanged.  This narrow branch exists
+    so the real scheduled job body can be tested under Seatbelt without being
+    mistaken for an unapproved NAS mirror.
+    """
+
+    if os.environ.get("MAGI_V3_REALISM_SANDBOX") != "1":
+        return ""
+    try:
+        fixture = _load_workflow_provider_fixture()
+    except (OSError, RuntimeError, ValueError):
+        return ""
+    if fixture is None:
+        return ""
+    root, payload = fixture
+    if set(str(item) for item in payload.get("allowed_workflows") or []) != {
+        "attachment_retry"
+    }:
+        return ""
+    marker = root / ".magi-v3-schedule-fixture"
+    if marker.is_symlink() or not marker.is_file():
+        return ""
+    try:
+        if marker.read_text(encoding="utf-8").strip() != "job_laf_portal_retry_once":
+            return ""
+        candidate_raw = Path(str(folder or "").strip()).expanduser()
+        if not candidate_raw.is_absolute() or candidate_raw.is_symlink():
+            return ""
+        candidate = candidate_raw.resolve(strict=True)
+        relative = candidate.relative_to(root)
+    except (OSError, RuntimeError, ValueError):
+        return ""
+    if not relative.parts or relative.parts[0] != "cases" or not candidate.is_dir():
+        return ""
+    return str(candidate)
+
+
 class _FixtureWorkflowAutomation:
     """External portal boundary for real draft orchestration under Seatbelt."""
 
@@ -6447,6 +6486,9 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         raw = str(folder or "").strip()
         if not raw:
             return ""
+        fixture_folder = _resolve_schedule_fixture_case_folder_for_write(raw)
+        if fixture_folder:
+            return fixture_folder
         canonical = translate_local_path_to_canonical(raw)
         for candidate in (canonical, raw):
             resolved = resolve_case_path_for_write(candidate)

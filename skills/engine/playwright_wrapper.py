@@ -19,6 +19,7 @@ import sys
 import threading
 import time
 from typing import List, Optional, Any, Dict
+from urllib.parse import urlsplit
 
 _logger = logging.getLogger(__name__)
 _PLAYWRIGHT_HEALTH_LOCK = threading.Lock()
@@ -26,6 +27,10 @@ _PLAYWRIGHT_INSTALL_LOCK = threading.Lock()
 _PLAYWRIGHT_HEALTH_CACHE: dict[str, Any] = {"ts": 0.0, "result": None}
 _ACTIVE_PLAYWRIGHT_DRIVERS: set[Any] = set()
 _ACTIVE_PLAYWRIGHT_DRIVERS_LOCK = threading.Lock()
+
+
+class NavigationPolicyError(RuntimeError):
+    """Raised when a legal browser attempts an undeclared top-level host."""
 
 # ==============================================================================
 # Selenium 相容 shim（供三模組在 Playwright 模式下仍能用 By/Keys/Select/EC）
@@ -155,6 +160,16 @@ def _truthy(value: str) -> bool:
     return (value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _sealed_production_runtime() -> bool:
+    """Return True when this process is bound to an immutable V3 release.
+
+    Sealed services receive the release-manifest binding from the deployment
+    contract. Browser payloads are build-time dependencies and must never be
+    installed by a production worker after activation.
+    """
+    return bool((os.environ.get("MAGI_V3_RELEASE_MANIFEST") or "").strip())
+
+
 def _is_playwright_browser_missing_error(exc: BaseException | str) -> bool:
     text = str(exc or "").lower()
     return (
@@ -178,6 +193,15 @@ def clear_playwright_health_cache() -> None:
 
 
 def _run_playwright_chromium_install() -> Dict[str, Any]:
+    if _sealed_production_runtime():
+        return {
+            "ok": False,
+            "blocked": True,
+            "reason": "runtime_install_forbidden_in_sealed_release",
+            "returncode": -1,
+            "stdout_tail": "",
+            "stderr_tail": "Playwright browser payload must be installed before sealing the release",
+        }
     timeout = int(os.environ.get("MAGI_PLAYWRIGHT_INSTALL_TIMEOUT_SECONDS", "600") or "600")
     cmd = [sys.executable, "-m", "playwright", "install", "chromium"]
     try:
@@ -242,7 +266,7 @@ def playwright_chromium_health(
         browser = pw.chromium.launch(
             headless=True,
             timeout=int(max(1.0, timeout_seconds) * 1000),
-            args=["--no-sandbox", "--disable-dev-shm-usage"],
+            args=["--disable-dev-shm-usage"],
         )
         page = browser.new_page()
         page.goto("about:blank", timeout=int(max(1.0, timeout_seconds) * 1000))
@@ -250,6 +274,7 @@ def playwright_chromium_health(
             "ok": True,
             "engine": "playwright-chromium",
             "detail": "Chromium launch OK",
+            "browser_sandbox_bypass": False,
             "cached": False,
         }
     except ImportError as exc:
@@ -293,7 +318,9 @@ def ensure_playwright_chromium(auto_install: Optional[bool] = None) -> Dict[str,
     their own partial fallback when the browser payload is missing.
     """
     if auto_install is None:
-        auto_install = _truthy(os.environ.get("MAGI_PLAYWRIGHT_AUTO_INSTALL", "1"))
+        auto_install = _truthy(os.environ.get("MAGI_PLAYWRIGHT_AUTO_INSTALL", "0"))
+    if _sealed_production_runtime():
+        auto_install = False
 
     health = playwright_chromium_health(cache_ttl_seconds=0)
     if health.get("ok"):
@@ -789,13 +816,25 @@ class PlaywrightDriverWrapper(object):
     Selenium without rewriting the core portal automation logic.
     """
 
-    def __init__(self, page, context, pw_instance, download_dir: Optional[str] = None):
+    def __init__(
+        self,
+        page,
+        context,
+        pw_instance,
+        download_dir: Optional[str] = None,
+        allowed_navigation_hosts: Optional[List[str]] = None,
+    ):
         self._page = page
         self._context = context
         self._pw = pw_instance
         self._active_frame = None
         self._last_dialog = None
         self._download_dir = download_dir
+        self._allowed_navigation_hosts = frozenset(
+            str(host or "").strip().lower().rstrip(".")
+            for host in (allowed_navigation_hosts or [])
+            if str(host or "").strip()
+        )
         self.switch_to = _PlaywrightSwitchTo(self)
         # A caller can fail after creating Playwright but before reaching its
         # own ``finally: driver.quit()``.  Keep a process-local inventory so
@@ -924,6 +963,7 @@ class PlaywrightDriverWrapper(object):
     # ---- WebDriver API ----
 
     def get(self, url: str):
+        self._assert_navigation_allowed(url)
         self._active_frame = None
         try:
             self._page.goto(url, wait_until="load", timeout=30000)
@@ -932,6 +972,18 @@ class PlaywrightDriverWrapper(object):
                 self._page.goto(url, wait_until="domcontentloaded", timeout=30000)
             except Exception:
                 pass
+
+    def _assert_navigation_allowed(self, url: str) -> None:
+        if not self._allowed_navigation_hosts:
+            return
+        parsed = urlsplit(str(url or ""))
+        if parsed.scheme in {"about", "data", "blob"}:
+            return
+        host = (parsed.hostname or "").lower().rstrip(".")
+        if host not in self._allowed_navigation_hosts:
+            raise NavigationPolicyError(
+                "top-level browser navigation host is not approved: %s" % (host or "<missing>")
+            )
 
     @property
     def current_url(self) -> str:
@@ -1299,6 +1351,7 @@ def create_playwright_driver(
     page_load_timeout: float = 60.0,
     profile_dir: Optional[str] = None,
     stealth: bool = True,
+    allowed_navigation_hosts: Optional[List[str]] = None,
 ) -> PlaywrightDriverWrapper:
     """
     建立 Playwright Chromium 驅動器並回傳 PlaywrightDriverWrapper。
@@ -1333,7 +1386,6 @@ def create_playwright_driver(
     pw = sync_playwright().start()
     try:
         launch_args = [
-            "--no-sandbox",
             "--disable-dev-shm-usage",
             "--disable-blink-features=AutomationControlled",
         ]
@@ -1343,7 +1395,8 @@ def create_playwright_driver(
         except Exception as launch_exc:
             if not (
                 _is_playwright_browser_missing_error(launch_exc)
-                and _truthy(os.environ.get("MAGI_PLAYWRIGHT_AUTO_INSTALL", "1"))
+                and not _sealed_production_runtime()
+                and _truthy(os.environ.get("MAGI_PLAYWRIGHT_AUTO_INSTALL", "0"))
             ):
                 raise
             _logger.warning("Playwright Chromium missing; running auto-install before retry")
@@ -1374,6 +1427,32 @@ def create_playwright_driver(
 
         context = browser.new_context(**ctx_kwargs)
 
+        normalized_navigation_hosts = frozenset(
+            str(host or "").strip().lower().rstrip(".")
+            for host in (allowed_navigation_hosts or [])
+            if str(host or "").strip()
+        )
+
+        if normalized_navigation_hosts:
+            def _navigation_policy(route, request):
+                try:
+                    frame = request.frame
+                    top_level = request.is_navigation_request() and frame.parent_frame is None
+                    parsed = urlsplit(str(request.url or ""))
+                    host = (parsed.hostname or "").lower().rstrip(".")
+                    local_safe = parsed.scheme in {"about", "data", "blob"}
+                    if top_level and not local_safe and host not in normalized_navigation_hosts:
+                        _logger.error("Blocked undeclared top-level navigation host: %s", host or "<missing>")
+                        route.abort("blockedbyclient")
+                        return
+                except Exception as exc:
+                    _logger.error("Navigation policy evaluation failed closed: %s", exc)
+                    route.abort("blockedbyclient")
+                    return
+                route.continue_()
+
+            context.route("**/*", _navigation_policy)
+
         if stealth:
             try:
                 context.add_init_script(
@@ -1398,7 +1477,13 @@ def create_playwright_driver(
             _logger.debug("Playwright CDP download path 設定失敗（通常不影響功能）: %s", cdp_err)
 
         _logger.info("✅ Playwright Chromium 初始化成功（download_dir=%s）", dl_path)
-        return PlaywrightDriverWrapper(page, context, pw, download_dir=dl_path)
+        return PlaywrightDriverWrapper(
+            page,
+            context,
+            pw,
+            download_dir=dl_path,
+            allowed_navigation_hosts=list(normalized_navigation_hosts),
+        )
 
     except Exception:
         try:

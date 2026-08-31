@@ -29,10 +29,11 @@ if __package__ in {None, ""}:  # Support ``python scripts/v3_release_gate.py``.
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts.v3_source_contract import SourceContractError, account_home, resolve_source_contract
-from scripts.architecture.generate_v2_inventory import (
+from scripts.architecture.generate_runtime_inventory import (
     build_inventory,
     collect_portable_cron_bytes,
     project_inventory_to_release,
+    semantic_inventory_projection,
 )
 from scripts.v3_validation.release_quality_evidence import (
     EXPECTED_GOLDEN_SETS,
@@ -161,7 +162,7 @@ def _r(path: str, operation: str, expected: Any = None) -> MetricRule:
 # SHA-bound cutover configuration at evaluation time.
 EVIDENCE_SPECS: dict[str, EvidenceSpec] = {
     "portable_source_inventory_current": EvidenceSpec(
-        "scripts.architecture.generate_v2_inventory",
+        "scripts.architecture.generate_runtime_inventory",
         "magi.v3.portable-source-inventory/v1",
         "offline",
         (
@@ -1122,6 +1123,8 @@ def _recompute_deploy_metrics(
         "upstream_deploy_manifest",
         "upstream_release_marker",
         "upstream_release_manifest",
+        "upstream_installed_release_marker",
+        "upstream_installed_release_manifest",
         "upstream_campaign_report",
         "upstream_launchagent",
     }
@@ -1139,6 +1142,14 @@ def _recompute_deploy_metrics(
     deploy_marker = _json_artifact(deploy_marker_artifact)
     deploy_manifest_artifact = _one(by_role, "upstream_deploy_manifest")
     deploy = _json_artifact(deploy_manifest_artifact)
+    installed_release_marker_artifact = _one(
+        by_role, "upstream_installed_release_marker"
+    )
+    installed_release_manifest_artifact = _one(
+        by_role, "upstream_installed_release_manifest"
+    )
+    installed_release_marker = _json_artifact(installed_release_marker_artifact)
+    installed_release_manifest = _json_artifact(installed_release_manifest_artifact)
     _exact_nonnegative_int(
         deploy_marker.get("schema_version"), 1, "deploy marker schema_version"
     )
@@ -1147,15 +1158,22 @@ def _recompute_deploy_metrics(
         deploy_marker.get("status") != "prepared_not_installed"
         or deploy_marker.get("ready_to_install") is not True
         or deploy_marker.get("mutation_performed") is not False
+        or deploy_marker.get("deployment_mode") != "production"
         or deploy_marker.get("manifest") != "deploy-manifest.json"
         or deploy_marker.get("manifest_sha256") != deploy_manifest_artifact.sha256
         or deploy_marker.get("release_id") != release.get("release_id")
         or deploy_marker.get("release_manifest_sha256") != release_artifact.sha256
         or deploy.get("status") != "prepared_not_installed"
         or deploy.get("mutation_performed") is not False
+        or deploy.get("deployment_mode") != "production"
         or deploy.get("release_id") != release.get("release_id")
         or deploy.get("release_manifest_sha256") != release_artifact.sha256
         or campaign.get("release_id") != deploy.get("release_id")
+        or installed_release_manifest_artifact.sha256 != release_artifact.sha256
+        or installed_release_manifest != release
+        or installed_release_marker_artifact.sha256
+        != _one(by_role, "upstream_release_marker").sha256
+        or installed_release_marker != marker
     ):
         raise ValueError("deploy marker/manifest/release/campaign binding failed")
     roles = deploy.get("roles")
@@ -1204,125 +1222,34 @@ def _recompute_deploy_metrics(
 
 
 def _route_external_storage_roots() -> list[str]:
-    home = account_home()
-    return [
-        str(Path("/Volumes")),
-        str(home / "Library" / "CloudStorage"),
-        str(home / ".magi_mounts"),
-        str(home / "SynologyDrive"),
-    ]
+    from scripts.v3_validation.route_certification import (
+        _expected_external_storage_roots,
+    )
 
-
-ROUTE_BASE_ENVIRONMENT_KEYS = (
-    "HOME", "LANG", "LC_ALL", "MAGI_AGENT_DIR", "MAGI_ALLOW_CLOUD_MODELS",
-    "MAGI_ALLOW_INTERNET", "MAGI_DISABLE_SERVER_STARTUP_HOOKS",
-    "MAGI_DISCORD_LAST_CHANNEL_FILE", "MAGI_ENABLE_LIVE_TESTS", "MAGI_EXPORTS_DIR",
-    "MAGI_LINE_LAST_SENDER_FILE", "MAGI_METRICS_DIR", "MAGI_OSC_FILE_SHARE_CACHE_DIR",
-    "MAGI_OSC_FILE_SHARE_STORE", "MAGI_ROOT_DIR", "MAGI_RUNTIME_DIR",
-    "MAGI_SKIP_IMPORT_PROBES", "MAGI_V3_OFFLINE_CERTIFICATION",
-    "MAGI_WEB_RESEARCH_CACHE_DIR", "PATH", "PYTHONDONTWRITEBYTECODE",
-    "PYTHONNOUSERSITE", "PYTHONPATH", "PYTHONSAFEPATH",
-    "PYTEST_DISABLE_PLUGIN_AUTOLOAD", "TMPDIR",
-)
-ROUTE_TRACE_ENVIRONMENT_KEYS = tuple(sorted({
-    *ROUTE_BASE_ENVIRONMENT_KEYS,
-    "MAGI_V3_ROUTE_TRACE_FILE",
-    "MAGI_V3_ROUTE_TRACE_LIVE_ROOT",
-    "MAGI_V3_ROUTE_TRACE_SANDBOX",
-}))
-ROUTE_FORMAL_RUNTIME_ENVIRONMENT_KEYS = (
-    "MAGI_V3_PYTHON_RUNTIME",
-    "MAGI_V3_PYTHON_RUNTIME_MANIFEST",
-    "MAGI_V3_PYTHON_RUNTIME_MANIFEST_SHA256",
-    "MAGI_V3_PYTHON_RUNTIME_REALPATH",
-    "MAGI_V3_PYTHON_RUNTIME_SHA256",
-    "MAGI_V3_PYTHON_RUNTIME_TREE_SHA256",
-    "MAGI_V3_ROUTE_CERTIFYING",
-)
-
-
-def _route_live_root() -> Path:
-    return account_home() / "Library" / "Application Support" / "MAGI"
-
-
-def _route_seatbelt_profile(workspace: Path) -> bytes:
-    workspace = Path(os.path.abspath(workspace.expanduser())).resolve()
-    clauses: list[str] = []
-    for root in (*_route_external_storage_roots(), str(_route_live_root())):
-        encoded = json.dumps(root, ensure_ascii=False)
-        clauses.extend((
-            f"(deny file-read* (literal {encoded}))",
-            f"(deny file-read* (subpath {encoded}))",
-            f"(deny file-write* (literal {encoded}))",
-            f"(deny file-write* (subpath {encoded}))",
-        ))
-    encoded_workspace = json.dumps(str(workspace), ensure_ascii=False)
-    return ("\n".join((
-        "(version 1)",
-        "(allow default)",
-        "(deny network*)",
-        "(deny file-write*)",
-        '(allow file-write* (literal "/dev/null"))',
-        f"(allow file-write* (literal {encoded_workspace}))",
-        f"(allow file-write* (subpath {encoded_workspace}))",
-        *clauses,
-        "",
-    ))).encode("utf-8")
+    return [str(root) for root in _expected_external_storage_roots()]
 
 
 def _route_seatbelt_attestation(workspace: Path) -> dict[str, Any]:
-    workspace = Path(os.path.abspath(workspace.expanduser())).resolve()
-    return {
-        "schema_version": 1,
-        "authority": "macos-seatbelt",
-        "sandbox_executable": "/usr/bin/sandbox-exec",
-        "profile_sha256": hashlib.sha256(_route_seatbelt_profile(workspace)).hexdigest(),
-        "network_denied": True,
-        "default_file_write_denied": True,
-        "allowed_write_roots": [str(workspace)],
-        "live_magi_root": str(_route_live_root()),
-        "live_magi_read_write_denied": True,
-        "external_storage_read_write_denied": True,
-        "external_storage_roots": _route_external_storage_roots(),
-        "workspace_only_write": True,
-        "environment_allowlist": {
-            "base": sorted(ROUTE_BASE_ENVIRONMENT_KEYS),
-            "trace": sorted(ROUTE_TRACE_ENVIRONMENT_KEYS),
-            "formal_base": sorted(
-                {*ROUTE_BASE_ENVIRONMENT_KEYS, *ROUTE_FORMAL_RUNTIME_ENVIRONMENT_KEYS}
-            ),
-            "formal_trace": sorted(
-                {*ROUTE_TRACE_ENVIRONMENT_KEYS, *ROUTE_FORMAL_RUNTIME_ENVIRONMENT_KEYS}
-            ),
-        },
-        "path_overrides_inherited": False,
-        "enforcement_probe_passed": True,
-    }
+    # The certifier owns this contract.  Keeping a second hand-maintained copy
+    # here previously made a valid v2 Seatbelt attestation fail the final gate.
+    from scripts.v3_validation.route_certification import _seatbelt_attestation
+
+    return _seatbelt_attestation(workspace)
 
 
 def _route_attested_seatbelt_workspace(
     value: Any, profile_id: str | None
 ) -> Path | None:
-    if not isinstance(value, dict):
-        return None
-    roots = value.get("allowed_write_roots")
-    if not isinstance(roots, list) or len(roots) != 1 or not isinstance(roots[0], str):
-        return None
-    candidate = Path(roots[0])
-    if not candidate.is_absolute():
-        return None
-    canonical = Path(os.path.abspath(candidate.expanduser())).resolve()
-    if str(canonical) != roots[0] or value != _route_seatbelt_attestation(canonical):
+    from scripts.v3_validation.route_certification import (
+        _attested_seatbelt_workspace,
+    )
+
+    canonical = _attested_seatbelt_workspace(value)
+    if canonical is None:
         return None
     if profile_id is not None and (
         canonical.name != profile_id or canonical.parent.name != "route-certification"
     ):
-        return None
-    for root in (*_route_external_storage_roots(), str(_route_live_root())):
-        try:
-            canonical.relative_to(Path(root).resolve())
-        except ValueError:
-            continue
         return None
     return canonical
 
@@ -1775,7 +1702,7 @@ def _recompute_portable_inventory_metrics(
         manifest_sha256=release_artifact.sha256,
     )
     inventory_artifact = _one(by_role, "upstream_portable_inventory")
-    inventory_path = "docs/architecture/v3/generated/v2_inventory.json"
+    inventory_path = "docs/architecture/v3/generated/runtime_inventory.json"
     if files.get(inventory_path, {}).get("sha256") != inventory_artifact.sha256:
         raise ValueError("portable inventory is not bound to release manifest")
     cron_artifact = _one(by_role, "upstream_campaign_cron_snapshot")
@@ -1905,7 +1832,9 @@ def _recompute_portable_inventory_metrics(
         cron_jobs=cron_inventory,
     )
     regenerated["root_name"] = expected_projection.get("root_name")
-    current = expected_projection == regenerated
+    current = semantic_inventory_projection(
+        expected_projection
+    ) == semantic_inventory_projection(regenerated)
     return {
         "inventory_sha_matches": current,
         "unmapped_interfaces": 0,
@@ -1939,11 +1868,7 @@ def _verify_campaign_ledger(
         or report.get("decision") != "GO"
     ):
         raise ValueError("campaign report is not a completed certifying offline campaign")
-    _exact_nonnegative_int(
-        report.get("required_independent_passes"),
-        7,
-        "campaign report required_independent_passes",
-    )
+    required_passes = _required_campaign_passes(report)
     cron = _one(by_role, "upstream_campaign_cron_snapshot")
     if report.get("cron_jobs_sha256") != cron.sha256:
         raise ValueError("campaign cron snapshot SHA-256 binding failed")
@@ -1957,8 +1882,13 @@ def _verify_campaign_ledger(
     for day in days:
         _context_matches_or_raise(day, expected_context, "campaign day")
         _exact_nonnegative_int(
+            day.get("required_independent_passes"),
+            required_passes,
+            "campaign day required_independent_passes",
+        )
+        _exact_nonnegative_int(
             day.get("completed_independent_passes"),
-            7,
+            required_passes,
             "campaign day completed_independent_passes",
         )
         if (
@@ -2557,35 +2487,17 @@ def _recompute_campaign_metrics(
             ),
         }
     if evidence_id == "hundred_cycle_worker_reap_soak_passed":
+        from scripts.v3_validation.worker_soak_evidence import (
+            summarize_worker_soak_measurements,
+        )
+
         rows = _campaign_structured_rows(
             days,
             "hundred_cycle_worker_reap_soak",
             required_passes=required_passes,
         )
         measurements = [row["structured_evidence"]["measurements"] for row in rows]
-        for row_index, item in enumerate(measurements):
-            for field in (
-                "cycles_requested",
-                "cycles_completed",
-                "process_groups_gone",
-                "active_workers_after",
-                "governor_slots_after",
-                "fd_drift",
-            ):
-                _nonnegative_int(item.get(field), f"worker soak row {row_index} {field}")
-        if any(
-            item.get("cycles_requested") != 100
-            or item.get("cycles_completed") != 100
-            or item.get("process_groups_gone") != 100
-            or item.get("active_workers_after") != 0
-            or item.get("governor_slots_after") != 0
-            or type(item.get("fd_drift")) is not int
-            or item["fd_drift"] < 0
-            or item["fd_drift"] > 2
-            for item in measurements
-        ):
-            raise ValueError("worker reap soak measurements failed authoritative thresholds")
-        return {"cycles": 700, "unreaped_workers": 0, "resource_baseline_restored": True}
+        return summarize_worker_soak_measurements(measurements)
     raise ValueError("campaign evidence id has no authoritative recomputation")
 
 
@@ -3247,6 +3159,38 @@ def _authoritative_normalized_metrics(
 ) -> dict[str, Any]:
     by_role = _artifacts_by_role([item for item in artifacts if item.role != "producer_report"])
     if evidence_id == "atomic_release_switch_and_cold_rollback_drill_passed":
+        source_contract = config.get("source_contract")
+        if (
+            isinstance(source_contract, dict)
+            and source_contract.get("legacy_v2_validation") == "disabled"
+        ):
+            from scripts.v3_validation.v3_rotation_drill import (
+                V3RotationDrillBlocked,
+                derive_v3_rotation_metrics,
+            )
+
+            expected_roles = {"upstream_v3_rotation_drill_report"}
+            if set(by_role) != expected_roles or any(
+                len(rows) != 1 for rows in by_role.values()
+            ):
+                raise ValueError(
+                    "G27 V3-only rotation normalized evidence source roles are not exact"
+                )
+            artifact = _one(by_role, "upstream_v3_rotation_drill_report")
+            _json_artifact(artifact)
+            with tempfile.TemporaryDirectory(prefix="magi-v3-rotation-gate-") as temporary:
+                report_path = Path(temporary).resolve() / "v3-rotation-report.json"
+                report_path.write_bytes(artifact.data)
+                try:
+                    return derive_v3_rotation_metrics(
+                        report_path,
+                        expected_context=expected_context,
+                        gate_config=config,
+                    )
+                except V3RotationDrillBlocked as exc:
+                    raise ValueError(
+                        f"G27 authoritative V3 rotation evidence blocked: {exc}"
+                    ) from exc
         from scripts.v3_validation.cutover_evidence import (
             CutoverEvidenceBlocked,
             RawPair,
@@ -3437,7 +3381,10 @@ def _authoritative_normalized_metrics(
         except HumanApprovalBlocked as exc:
             raise ValueError(f"G28 authoritative human approval blocked: {exc}") from exc
     if evidence_id == "seven_day_schedule_10x_arrival_2x_duration_replay_passed":
-        from scripts.v3_validation.schedule_evidence import derive_schedule_gate_metrics
+        from scripts.v3_validation.schedule_evidence import (
+            derive_schedule_gate_metrics,
+            enabled_job_ids_from_cron,
+        )
 
         campaign_roles = {
             "upstream_campaign_report",
@@ -3453,6 +3400,11 @@ def _authoritative_normalized_metrics(
             "upstream_schedule_body_registry_config",
             "upstream_schedule_duration_baseline",
         }
+        if (
+            not campaign_roles.issubset(by_role)
+            or any(not by_role.get(role) for role in campaign_roles)
+        ):
+            raise ValueError("G11 normalized evidence source roles are not exact")
         campaign_sources = {role: by_role[role] for role in campaign_roles}
         campaign, days = _verify_campaign_ledger(campaign_sources, expected_context)
         required_passes = _required_campaign_passes(campaign)
@@ -3536,12 +3488,17 @@ def _authoritative_normalized_metrics(
                 or capacity.get("validation_profile_id") != profile.get("profile_id")
             ):
                 raise ValueError(f"G11 campaign/raw report binding failed at pass {index}")
+        cron_artifact = _one(by_role, "upstream_campaign_cron_snapshot")
+        if cron_artifact.media_type != "application/json":
+            raise ValueError("G11 campaign cron snapshot must be application/json")
+        enabled_job_ids = enabled_job_ids_from_cron(
+            _load_json_value_bytes(cron_artifact.data, cron_artifact.path)
+        )
         return derive_schedule_gate_metrics(
             reports,
             body_reports,
-            cron_jobs_sha256=_one(
-                by_role, "upstream_campaign_cron_snapshot"
-            ).sha256,
+            enabled_job_ids=enabled_job_ids,
+            cron_jobs_sha256=cron_artifact.sha256,
             dispatch_policy_sha256=_one(
                 by_role, "upstream_schedule_dispatch_policy"
             ).sha256,

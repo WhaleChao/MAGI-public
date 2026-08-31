@@ -8,6 +8,8 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from gui.magi_menubar import _business_readiness_detail
 from scripts.ops import business_readiness_snapshot as readiness_snapshot
 from scripts.ops import business_module_live_check as live_check
@@ -29,6 +31,22 @@ _PROCESS_HYGIENE_SPEC = importlib.util.spec_from_file_location(
 assert _PROCESS_HYGIENE_SPEC is not None and _PROCESS_HYGIENE_SPEC.loader is not None
 process_hygiene = importlib.util.module_from_spec(_PROCESS_HYGIENE_SPEC)
 _PROCESS_HYGIENE_SPEC.loader.exec_module(process_hygiene)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_process_environment(monkeypatch):
+    """Undo environment writes made internally by LIVE-check entrypoints.
+
+    ``monkeypatch`` can only restore assignments made through itself.  The
+    production entrypoint intentionally binds a complete shared-state contract
+    directly into ``os.environ``; without this boundary those values escaped
+    the test and redirected later LAF/file-review fixtures to stale paths.
+    """
+
+    inherited = dict(os.environ)
+    yield
+    os.environ.clear()
+    os.environ.update(inherited)
 
 
 def _coverage_portal_receipt(batch: str, count: int) -> dict:
@@ -2253,6 +2271,97 @@ def test_file_review_coverage_accepts_current_verified_portal_probe(tmp_path, mo
     assert result["parsed"]["portal_cases"] == 213
 
 
+def _ola_upstream_probe(*, attempts=2, code="ola_error_page", detail=True):
+    return {
+        "name": "file_review_downloadable_probe",
+        "ok": False,
+        "returncode": 1,
+        "parsed": {
+            "success": False,
+            "source": "gmail",
+            "portal": {
+                "success": False,
+                "error_code": code,
+                "error_detail_present": detail,
+                "error_detail_sha256": "a" * 64 if detail else "",
+                "attempts": attempts,
+            },
+        },
+    }
+
+
+def test_file_review_probe_classifies_only_bounded_evidenced_ola_outage():
+    classified = live_check._classify_file_review_probe(_ola_upstream_probe())
+
+    assert classified["ok"] is True
+    assert classified["deferred"] is True
+    assert classified["classification"] == "external_dependency_deferred"
+    assert classified["parsed"]["portal_live_verified"] is False
+    assert classified["parsed"]["portal"]["error_code"] == "ola_error_page"
+
+    for rejected in (
+        _ola_upstream_probe(attempts=1),
+        _ola_upstream_probe(code="sso_login_failed"),
+        _ola_upstream_probe(detail=False),
+    ):
+        assert live_check._classify_file_review_probe(rejected) is rejected
+        assert rejected["ok"] is False
+
+
+def test_file_review_coverage_defers_evidenced_ola_outage_without_hiding_local_failures(
+    tmp_path, monkeypatch
+):
+    static = tmp_path / "static"
+    static.mkdir()
+    (static / "file_review_auto_state.json").write_text(
+        json.dumps(
+            {
+                "updated_at": "2026-08-30T10:20:00",
+                "phase": "cycle_complete",
+                "result": {
+                    "ok": False,
+                    "portal_verified": False,
+                    "check": {
+                        "parsed": {
+                            "portal_probe_ok": False,
+                            "portal_status_semantics": "ola-current-state-v2",
+                            "scan_errors": 0,
+                            "recent_unnotified_count": 0,
+                        }
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(live_check, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(live_check, "_iso_age_seconds", lambda value: 60)
+
+    result = live_check._file_review_ingestion_coverage_live(
+        portal_probe=_ola_upstream_probe()
+    )
+
+    assert result["ok"] is True
+    assert result["deferred"] is True
+    assert result["classification"] == "external_dependency_deferred"
+    assert result["parsed"]["portal_waiting_on_external_dependency"] is True
+    assert result["parsed"]["reason"] == ""
+
+    failed_state = json.loads(
+        (static / "file_review_auto_state.json").read_text(encoding="utf-8")
+    )
+    failed_state["result"]["check"]["parsed"]["scan_errors"] = 1
+    (static / "file_review_auto_state.json").write_text(
+        json.dumps(failed_state), encoding="utf-8"
+    )
+    failed = live_check._file_review_ingestion_coverage_live(
+        portal_probe=_ola_upstream_probe()
+    )
+    assert failed["ok"] is False
+    assert failed["deferred"] is False
+    assert "source_scan_errors" in failed["parsed"]["reason"]
+
+
 def test_file_review_coverage_rejects_fresh_downloads_hidden_by_deferred_worker(
     tmp_path, monkeypatch
 ):
@@ -3240,21 +3349,22 @@ def test_release_local_environment_overrides_stale_shared_dotenv_paths(tmp_path,
 
 
 def test_live_shared_state_environment_derives_missing_launchd_bindings(tmp_path, monkeypatch):
+    from magi_v3.external_inputs import live_shared_state_environment
+
     shared = tmp_path / "runtime" / "MAGI_v3" / "shared"
     runtime = shared / "runtime"
     runtime.mkdir(parents=True)
     monkeypatch.setenv("MAGI_RUNTIME_DIR", str(runtime))
-    for key in (
-        "MAGI_SHARED_STATE_DIR",
-        "MAGI_V3_SHARED_STATE_DIR",
-        "MAGI_FILE_REVIEW_STATE_DIR",
-        "MAGI_PAYMENT_REGISTRY_PATH",
-        "MAGI_PAYMENT_PROOF_REGISTRY_PATH",
-    ):
+    expected = live_shared_state_environment(shared)
+    # Register every contract-owned key with monkeypatch before the product
+    # helper fills it.  A hand-maintained subset previously leaked payment and
+    # LAF pending paths into later tests and made the validation order-dependent.
+    for key in expected:
         monkeypatch.delenv(key, raising=False)
 
     bound = live_check._bind_live_shared_state_environment()
 
+    assert bound == expected
     assert bound["MAGI_SHARED_STATE_DIR"] == str(shared)
     assert bound["MAGI_V3_SHARED_STATE_DIR"] == str(shared)
     assert bound["MAGI_FILE_REVIEW_STATE_DIR"] == str(shared / "file-review")
@@ -3321,6 +3431,39 @@ def test_host_singleton_audit_accepts_active_release_root_and_children(tmp_path,
 
     assert result["ok"] is True
     assert result["parsed"]["drift"] == []
+
+
+def test_host_singleton_audit_covers_paperclip_and_memory_services(tmp_path, monkeypatch):
+    release = tmp_path / "MAGI" / "releases" / "v3-current"
+    release.mkdir(parents=True)
+    (release / "release-manifest.json").write_text("{}", encoding="utf-8")
+    agents = tmp_path / "LaunchAgents"
+    agents.mkdir()
+    old_release = tmp_path / "MAGI" / "releases" / "v3-rc627"
+    for label, script in (
+        ("com.magi.memory-watchdog", "scripts/ops/memory_watchdog.py"),
+        ("com.magi.paperclip-share-gateway", "scripts/share_gateway.py"),
+        ("com.magi.paperclip-share-tunnel", "scripts/share_tunnel_supervisor.py"),
+    ):
+        (agents / f"{label}.plist").write_bytes(
+            plistlib.dumps(
+                {
+                    "Label": label,
+                    "ProgramArguments": ["/usr/bin/python3", str(old_release / script)],
+                }
+            )
+        )
+    monkeypatch.setattr(live_check, "REPO_ROOT", release)
+    monkeypatch.setenv("MAGI_LAUNCHAGENTS_DIR", str(agents))
+
+    result = live_check._host_singleton_release_bindings_live()
+
+    assert result["ok"] is False
+    assert {row["label"] for row in result["parsed"]["drift"]} == {
+        "com.magi.memory-watchdog",
+        "com.magi.paperclip-share-gateway",
+        "com.magi.paperclip-share-tunnel",
+    }
 
 
 def test_live_runtime_fingerprint_covers_business_module_cron_jobs():

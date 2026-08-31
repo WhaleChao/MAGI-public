@@ -466,6 +466,9 @@ class HostBackend:
         argv = [
             *self._sandbox_prefix(profile, workdir),
             str(runtime),
+            "-B",
+            "-X",
+            "pycache_prefix=/dev/null",
             "-I",
             "-c",
             code,
@@ -1542,6 +1545,7 @@ def collect(plan: Mapping[str, Any], token: str, *, backend: Backend | None = No
         "TMPDIR": str(workdir / "tmp"),
         "PYTHONPATH": str(release_root),
         "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONPYCACHEPREFIX": "/dev/null",
         "MAGI_V3_ISOLATED_RESOURCE_WINDOW": "1",
         "MAGI_V3_RELEASE_MANIFEST": str(manifest_path),
         "MAGI_V3_RELEASE_MANIFEST_SHA256": str(binding["release_manifest_sha256"]),

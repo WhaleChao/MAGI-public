@@ -11,12 +11,17 @@ import sys
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 MAGI_ROOT = Path(__file__).resolve().parents[2]
 if str(MAGI_ROOT) not in sys.path:
     sys.path.insert(0, str(MAGI_ROOT))
 
+from magi_v3.evidence_ledger import (
+    EVIDENCE_ENVELOPE_SCHEMA,
+    EvidenceLedgerError,
+    envelope_health_view,
+)
 from skills.ops.cron_command_identity import command_definition_sha256
 DEFAULT_MATRIX = MAGI_ROOT / "config" / "test_matrix.json"
 DEFAULT_RUNTIME_DIR = Path(os.environ.get("MAGI_RUNTIME_DIR", "").strip() or (MAGI_ROOT / ".runtime")).expanduser()
@@ -1699,6 +1704,68 @@ def evaluate_health_file(
     mtime = _mtime_dt(path)
     timestamp = _payload_timestamp(data) or mtime
     age = _age_hours(timestamp, now)
+    if isinstance(data, dict) and data.get("schema") == EVIDENCE_ENVELOPE_SCHEMA:
+        active_release_id = str((active_release or {}).get("release_id") or "").strip()
+        if not active_release_id:
+            return {
+                "path": _rel(path, root),
+                "status": "failed",
+                "ok": False,
+                "reason": "active_release_binding_missing",
+                "contract": "evidence_envelope_v2",
+                "status_class": str(data.get("status_class") or "live_health"),
+                "outcome": str(data.get("outcome") or ""),
+                "release_id": str(data.get("release_id") or ""),
+                "trace_id": "",
+                "timestamp": timestamp.isoformat() if timestamp else "",
+                "age_hours": age,
+                "size_bytes": path.stat().st_size if path.exists() else 0,
+            }
+        try:
+            view = envelope_health_view(
+                data,
+                active_release_id=active_release_id,
+                now=now,
+            )
+        except EvidenceLedgerError as exc:
+            return {
+                "path": _rel(path, root),
+                "status": "failed",
+                "ok": False,
+                "reason": f"invalid_evidence_envelope:{exc}",
+                "contract": "evidence_envelope_v2",
+                "status_class": str(data.get("status_class") or "live_health"),
+                "outcome": str(data.get("outcome") or ""),
+                "release_id": str(data.get("release_id") or ""),
+                "trace_id": "",
+                "timestamp": timestamp.isoformat() if timestamp else "",
+                "age_hours": age,
+                "size_bytes": path.stat().st_size if path.exists() else 0,
+            }
+        status = str(view["status"])
+        reason = str(view["reason_code"])
+        if (
+            status in {"ok", "observed"}
+            and max_age_hours > 0
+            and age is not None
+            and age > max_age_hours
+        ):
+            status = "stale"
+            reason = f"age_hours>{max_age_hours:g}"
+        return {
+            "path": _rel(path, root),
+            "status": status,
+            "ok": status in {"ok", "observed", "superseded"},
+            "reason": reason,
+            "contract": "evidence_envelope_v2",
+            "status_class": view["status_class"],
+            "outcome": view["outcome"],
+            "release_id": view["release_id"],
+            "trace_id": view["trace_id"],
+            "timestamp": timestamp.isoformat() if timestamp else "",
+            "age_hours": age,
+            "size_bytes": path.stat().st_size if path.exists() else 0,
+        }
     if _nonblocking_deferred_health(data):
         ok, ok_source = None, "deferred_nonblocking"
     else:
@@ -1736,10 +1803,46 @@ def evaluate_health_file(
         "ok": status in {"ok", "observed", "superseded"},
         "reason": reason,
         "contract": ok_source,
+        "status_class": _legacy_health_status_class(path, data),
+        "outcome": _legacy_health_outcome(status, data),
+        "release_id": str(data.get("release_id") or "") if isinstance(data, dict) else "",
+        "trace_id": str(data.get("trace_id") or "") if isinstance(data, dict) else "",
         "timestamp": timestamp.isoformat() if timestamp else "",
         "age_hours": age,
         "size_bytes": path.stat().st_size if path.exists() else 0,
     }
+
+
+def _legacy_health_status_class(path: Path, data: Any) -> str:
+    """Classify legacy projections without weakening their existing contract."""
+
+    name = path.name.lower()
+    if name == "business_readiness_latest.json":
+        return "business_backlog"
+    if isinstance(data, dict) and any(
+        data.get(key) is True
+        for key in ("needs_human", "human_required", "manual_required", "action_required")
+    ):
+        return "human_attention"
+    if any(marker in name for marker in ("acceptance", "readiness", "release_gate", "commercial")):
+        return "release_acceptance"
+    return "live_health"
+
+
+def _legacy_health_outcome(status: str, data: Any) -> str:
+    if status == "superseded":
+        return "superseded"
+    if status in {"failed", "missing", "stale"}:
+        return "failed"
+    if isinstance(data, dict):
+        state = str(data.get("state") or data.get("status") or "").strip().lower()
+        if state in {"attention", "needs_human"}:
+            return "attention"
+        if state in {"waiting", "queued", "running", "deferred"}:
+            return "waiting"
+    if status == "observed":
+        return "observed"
+    return "passed"
 
 
 def _expected_health_paths_from_matrix(matrix: dict[str, Any], root: Path, runtime_dir: Path) -> list[dict[str, Any]]:
@@ -2865,6 +2968,26 @@ def build_index(
         for item in health_files
         if item["status"] == "superseded"
     ]
+    status_dimensions = {
+        status_class: [
+            {
+                "path": item["path"],
+                "status": item["status"],
+                "outcome": item.get("outcome", ""),
+                "reason": item["reason"],
+                "release_id": item.get("release_id", ""),
+                "trace_id": item.get("trace_id", ""),
+            }
+            for item in health_files
+            if item.get("status_class") == status_class
+        ]
+        for status_class in (
+            "release_acceptance",
+            "live_health",
+            "business_backlog",
+            "human_attention",
+        )
+    }
     missing.extend(
         {"path": item["path"], "owners": [], "sources": ["scan"], "reason": item["reason"]}
         for item in health_files
@@ -2976,6 +3099,7 @@ def build_index(
                 "superseded_release_artifacts": superseded_release_artifacts[:30],
             },
         },
+        "status_dimensions": status_dimensions,
         "health": {
             "ok": health_ok,
             "failed": failed,

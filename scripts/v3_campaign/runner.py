@@ -45,6 +45,7 @@ ROUTE_BASE_ENVIRONMENT_KEYS = (
     "MAGI_OSC_FILE_SHARE_STORE", "MAGI_ROOT_DIR", "MAGI_RUNTIME_DIR",
     "MAGI_SKIP_IMPORT_PROBES", "MAGI_V3_OFFLINE_CERTIFICATION",
     "MAGI_WEB_RESEARCH_CACHE_DIR", "PATH", "PYTHONDONTWRITEBYTECODE",
+    "PYTHONPYCACHEPREFIX",
     "PYTHONNOUSERSITE", "PYTHONPATH", "PYTHONSAFEPATH",
     "PYTEST_DISABLE_PLUGIN_AUTOLOAD", "TMPDIR",
 )
@@ -324,6 +325,45 @@ def _canonical_bytes(value: Any) -> bytes:
     return (
         json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
     ).encode("utf-8")
+
+
+def _failure_diagnostics(stdout: str, stderr: str) -> dict[str, Any]:
+    """Preserve bounded structured errors without retaining raw workload logs."""
+
+    for line in reversed(stdout.splitlines()):
+        candidate = line[line.find("{") :] if "{" in line else ""
+        if not candidate:
+            continue
+        try:
+            payload = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict) or payload.get("ok") is not False:
+            continue
+        diagnostic: dict[str, Any] = {
+            "schema": "magi.v3.workload-failure-diagnostic/v1",
+            "source": "structured_stdout",
+        }
+        for key in ("error", "child_error"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                diagnostic[key] = "".join(
+                    character if character >= " " or character in "\t" else "?"
+                    for character in value.strip()
+                )[:8000]
+        if type(payload.get("returncode")) is int:
+            diagnostic["child_returncode"] = payload["returncode"]
+        for key in ("stdout_sha256", "stderr_sha256"):
+            value = payload.get(key)
+            if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value):
+                diagnostic[f"child_{key}"] = value
+        return diagnostic
+    return {
+        "schema": "magi.v3.workload-failure-diagnostic/v1",
+        "source": "digest_only",
+        "stdout_bytes": len(stdout.encode()),
+        "stderr_bytes": len(stderr.encode()),
+    }
 
 
 def _structured_workload_evidence(
@@ -2991,6 +3031,9 @@ class CampaignRunner:
             probe = subprocess.run(
                 [
                     str(runtime),
+                    "-B",
+                    "-X",
+                    "pycache_prefix=/dev/null",
                     "-I",
                     "-S",
                     "-c",
@@ -3002,6 +3045,7 @@ class CampaignRunner:
                     "HOME": str(self.state_dir),
                     "LANG": "C.UTF-8",
                     "PYTHONDONTWRITEBYTECODE": "1",
+                    "PYTHONPYCACHEPREFIX": "/dev/null",
                 },
                 capture_output=True,
                 text=True,
@@ -3075,6 +3119,7 @@ class CampaignRunner:
             "TMPDIR": str(temporary),
             "LANG": "C.UTF-8",
             "PYTHONDONTWRITEBYTECODE": "1",
+            "PYTHONPYCACHEPREFIX": "/dev/null",
             "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
             "MAGI_V3_OFFLINE_CERTIFICATION": "1",
             "MAGI_ENABLE_LIVE_TESTS": "0",
@@ -3721,6 +3766,9 @@ class CampaignRunner:
                         "structured_evidence_rejected"
                         if structured_rejection_reason is not None
                         else "workload_process_failed"
+                    )
+                    outcome["failure_diagnostic"] = _failure_diagnostics(
+                        stdout, stderr
                     )
                 if structured_rejection_reason is not None:
                     outcome["failure_reason"] = structured_rejection_reason

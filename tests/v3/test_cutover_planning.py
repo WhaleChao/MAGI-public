@@ -14,6 +14,16 @@ from scripts.v3_cutover.planning import create_prepared_plan
 from scripts.v3_pdf_namer_handoff import precopy
 
 
+EXCLUDED_EVIDENCE = [
+    "atomic_release_switch_and_cold_rollback_drill_passed",
+    "human_go_approval_recorded",
+]
+REQUIRED_EVIDENCE = [
+    *(f"legacy-evidence-{index}" for index in range(12)),
+    *EXCLUDED_EVIDENCE,
+]
+
+
 def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -21,6 +31,10 @@ def _sha(path: Path) -> str:
 def _json(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _legacy_gate(path: Path) -> None:
+    _json(path, {"schema_version": 1, "required_evidence": REQUIRED_EVIDENCE})
 
 
 def _v2_agent_bindings(directory: Path) -> list[str]:
@@ -53,7 +67,7 @@ def test_prepared_plan_generator_hash_binds_every_input(
     tmp_path: Path, kind: str, operation: str
 ) -> None:
     gates = tmp_path / "gates.json"
-    _json(gates, {"schema_version": 1})
+    _legacy_gate(gates)
     release_gate = tmp_path / "release-gate.json"
     _json(release_gate, {"schema_version": 1})
     report = tmp_path / "pre-cutover.json"
@@ -62,14 +76,11 @@ def test_prepared_plan_generator_hash_binds_every_input(
         {
             "gate_config_sha256": _sha(gates),
             "execution_purpose": "atomic_drill",
-            "gate_stage": "cutover_drill_26_of_28",
+            "gate_stage": "cutover_drill_12_of_14",
             "decision": "GO_FOR_CUTOVER_DRILL_ONLY",
-            "required_evidence_count": 28,
-            "passed_evidence_count": 26,
-            "excluded_evidence": [
-                "atomic_release_switch_and_cold_rollback_drill_passed",
-                "human_go_approval_recorded",
-            ],
+            "required_evidence_count": 14,
+            "passed_evidence_count": 12,
+            "excluded_evidence": EXCLUDED_EVIDENCE,
             "release_gate_report": {
                 "path": str(release_gate.resolve()),
                 "sha256": _sha(release_gate),
@@ -164,7 +175,7 @@ def test_prepared_plan_generator_hash_binds_every_input(
 
 def test_plan_generator_rejects_insecure_token_and_mismatched_release(tmp_path: Path) -> None:
     gates = tmp_path / "gates.json"
-    _json(gates, {})
+    _legacy_gate(gates)
     release_gate = tmp_path / "release-gate.json"
     _json(release_gate, {"schema_version": 1})
     report = tmp_path / "report.json"
@@ -173,14 +184,11 @@ def test_plan_generator_rejects_insecure_token_and_mismatched_release(tmp_path: 
         {
             "gate_config_sha256": _sha(gates),
             "execution_purpose": "atomic_drill",
-            "gate_stage": "cutover_drill_26_of_28",
+            "gate_stage": "cutover_drill_12_of_14",
             "decision": "GO_FOR_CUTOVER_DRILL_ONLY",
-            "required_evidence_count": 28,
-            "passed_evidence_count": 26,
-            "excluded_evidence": [
-                "atomic_release_switch_and_cold_rollback_drill_passed",
-                "human_go_approval_recorded",
-            ],
+            "required_evidence_count": 14,
+            "passed_evidence_count": 12,
+            "excluded_evidence": EXCLUDED_EVIDENCE,
             "release_gate_report": {
                 "path": str(release_gate.resolve()),
                 "sha256": _sha(release_gate),

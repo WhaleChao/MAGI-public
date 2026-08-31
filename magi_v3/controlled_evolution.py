@@ -510,6 +510,7 @@ def _run(
                 "LANG": "C.UTF-8",
                 "LC_ALL": "C.UTF-8",
                 "PYTHONDONTWRITEBYTECODE": "1",
+                "PYTHONPYCACHEPREFIX": "/dev/null",
             }
         ),
     )
@@ -848,6 +849,7 @@ def verify_candidate(
         "HOME": str(sandbox_dir),
         "TMPDIR": str(sandbox_dir),
         "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONPYCACHEPREFIX": "/dev/null",
         "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
         "PYTHONPATH": str(pytest_site_root),
         "MAGI_ALLOW_INTERNET": "0",

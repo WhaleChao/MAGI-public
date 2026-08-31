@@ -94,7 +94,7 @@ def _runtime(tmp_path: Path) -> Path:
     runtime.parent.mkdir(parents=True)
     runtime.write_text(
         "#!/bin/sh\n"
-        "printf '%s\\n' \"$PYTHONDONTWRITEBYTECODE\" \"$MAGI_AGENT_DIR\" "
+        "printf '%s\\n' \"$PYTHONDONTWRITEBYTECODE\" \"$PYTHONPYCACHEPREFIX\" \"$MAGI_AGENT_DIR\" "
         "\"$MAGI_EXPORTS_DIR\" \"$PYTHONPATH\" \"$PYTHONNOUSERSITE\" "
         "\"$PYTHONSAFEPATH\" \"$MAGI_ROOT_DIR\" \"$MAGI_ORCH_DIR\" "
         "\"$MAGI_JSON_DIR\" \"$MAGI_SKILL_PYTHON\" \"$MAGI_SKILL_OVERLAY_DIR\" "
@@ -204,6 +204,7 @@ def test_launcher_hash_binds_external_runtime_and_redirects_mutable_paths(tmp_pa
     assert result.returncode == 0
     assert output.read_text(encoding="utf-8").splitlines() == [
         "1",
+        "/dev/null",
         str(shared / "agent"),
         str(shared / "exports"),
         str(release_root),
@@ -222,8 +223,42 @@ def test_launcher_hash_binds_external_runtime_and_redirects_mutable_paths(tmp_pa
         str(shared / "skill-overlays" / ".iron-dome" / "dynamic_rules.json"),
         str(shared / "skill-overlays" / ".iron-dome" / "patterns_cache.json"),
         str(shared / "skill-overlays" / ".iron-dome" / "upstream_last.json"),
-        "-m magi_v3.gateway",
+        "-B -X pycache_prefix=/dev/null -m magi_v3.gateway",
     ]
+
+
+def test_launcher_refuses_python_bytecode_cache_policy_override(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    output = tmp_path / "must-not-exist.txt"
+    environment = {
+        **os.environ,
+        "MAGI_V3_PYTHON_RUNTIME": str(runtime),
+        "MAGI_V3_PYTHON_RUNTIME_REALPATH": str(runtime.resolve()),
+        "MAGI_V3_PYTHON_RUNTIME_SHA256": hashlib.sha256(runtime.read_bytes()).hexdigest(),
+        "LAUNCHER_TEST_OUTPUT": str(output),
+        **_cron_environment(tmp_path),
+        **_runtime_manifest_environment(tmp_path, runtime),
+    }
+    launcher = _launcher_from_environment(environment)
+
+    result = subprocess.run(
+        [
+            str(launcher),
+            "-X",
+            "pycache_prefix=/tmp/unbound-cache",
+            "-m",
+            "magi_v3.gateway",
+        ],
+        env=environment,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    assert result.returncode == 126
+    assert "bytecode cache policy override is forbidden" in result.stderr
+    assert not output.exists()
 
 
 def test_launcher_refuses_hash_mismatch_without_executing_runtime(tmp_path: Path) -> None:

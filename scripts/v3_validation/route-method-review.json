@@ -11,7 +11,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "commercial-observability-root-review-2026-08-08",
-      "v2_handler_source": "api/blueprints/admin_runtime.py:1815",
+      "handler_source": "api/blueprints/admin_runtime.py:1817",
       "rationale": "Admin-authenticated GET reads only the hash-bound control ledger and returns a bounded deidentified no-store support bundle; missing or unverifiable evidence fails closed without mutation."
     },
     {
@@ -22,7 +22,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "phase1-security-review",
-      "v2_handler_source": "api/blueprints/admin_runtime.py:3128",
+      "handler_source": "api/blueprints/admin_runtime.py:3131",
       "rationale": "Liveness handler is a read-only process-health response."
     },
     {
@@ -33,7 +33,7 @@
       "side_effect_class": "external_commit",
       "reviewed": true,
       "reviewed_by": "phase1-security-review",
-      "v2_handler_source": "api/tools_api.py:1302",
+      "handler_source": "api/tools_api.py:1344",
       "rationale": "Handler dispatches orchestrator/provider work and can produce externally visible effects, so it must never be a live validation probe."
     },
     {
@@ -44,7 +44,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "phase1-security-review",
-      "v2_handler_source": "api/blueprints/web_runtime.py:1004",
+      "handler_source": "api/blueprints/web_runtime.py:1004",
       "rationale": "Chat requests can update local conversation and memory state."
     },
     {
@@ -55,7 +55,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "osc-file-offline-contract-review",
-      "v2_handler_source": "api/blueprints/osc_files.py:1928",
+      "handler_source": "api/blueprints/osc_files.py:1928",
       "rationale": "Handler reads an allowlisted file and can create bounded temporary or cached preview artifacts and an audit event; offline replay redirects all temporary writes to a caller-owned sandbox and suppresses audit persistence."
     },
     {
@@ -66,7 +66,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "osc-file-offline-contract-review",
-      "v2_handler_source": "api/blueprints/osc_cases.py:6453",
+      "handler_source": "api/blueprints/osc_cases.py:6448",
       "rationale": "Handler streams an allowlisted file through a bounded temporary staged copy and emits an audit event; offline replay confines staging to its sandbox and suppresses audit persistence."
     },
     {
@@ -77,7 +77,7 @@
       "side_effect_class": "external_commit",
       "reviewed": true,
       "reviewed_by": "operational-golden-flow-rc15",
-      "v2_handler_source": "api/blueprints/osc_files.py:2181",
+      "handler_source": "api/blueprints/osc_files.py:2181",
       "rationale": "The existing-path branch only lists an allowlisted directory, but an unresolved path can invoke NAS mount-on-demand. Offline evidence therefore executes only a pre-existing synthetic sandbox path and proves that no mount or network boundary was crossed."
     },
     {
@@ -88,7 +88,7 @@
       "side_effect_class": "external_commit",
       "reviewed": true,
       "reviewed_by": "operational-golden-flow-rc15",
-      "v2_handler_source": "api/blueprints/osc_files.py:1839",
+      "handler_source": "api/blueprints/osc_files.py:1839",
       "rationale": "The existing-path branch reads directory metadata, while resolution failure can invoke NAS mount-on-demand. Offline evidence is limited to a pre-existing synthetic sandbox tree and requires zero mount and network attempts."
     },
     {
@@ -99,7 +99,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "operational-golden-flow-rc15",
-      "v2_handler_source": "api/blueprints/osc_files.py:2027",
+      "handler_source": "api/blueprints/osc_files.py:2027",
       "rationale": "Handler resolves an allowlisted existing file and returns stat, MIME, extension, and preview-category metadata without modifying the file or external state."
     },
     {
@@ -110,7 +110,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "operational-golden-flow-rc15",
-      "v2_handler_source": "api/blueprints/osc_cases.py:9967",
+      "handler_source": "api/blueprints/osc_cases.py:10000",
       "rationale": "Despite POST transport, the handler validates allowlisted Office/PDF paths, parses their contents, and returns computed records without persisting business or provider state."
     },
     {
@@ -121,7 +121,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "phase1-security-review",
-      "v2_handler_source": "api/tools_api.py:2597",
+      "handler_source": "api/tools_api.py:2608",
       "rationale": "Multipart processing creates and removes a bounded local temporary document artifact."
     },
     {
@@ -132,7 +132,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "phase1-security-review",
-      "v2_handler_source": "api/server.py:919",
+      "handler_source": "api/server.py:920",
       "rationale": "GET is the static webhook reachability response."
     },
     {
@@ -143,7 +143,7 @@
       "side_effect_class": "external_commit",
       "reviewed": true,
       "reviewed_by": "phase1-security-review",
-      "v2_handler_source": "api/server.py:919",
+      "handler_source": "api/server.py:920",
       "rationale": "POST dispatches LINE events and updates webhook state."
     },
     {
@@ -154,7 +154,7 @@
       "side_effect_class": "external_commit",
       "reviewed": true,
       "reviewed_by": "phase1-security-review",
-      "v2_handler_source": "api/blueprints/osc_gcal.py:253",
+      "handler_source": "api/blueprints/osc_gcal.py:253",
       "rationale": "OAuth callback exchanges an external code and commits a token file."
     },
     {
@@ -165,7 +165,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "service-5003-offline-code-review",
-      "v2_handler_source": "api/tools_api.py:403",
+      "handler_source": "api/tools_api.py:408",
       "rationale": "Handler validates the requested path and returns an existing export file without mutating it."
     },
     {
@@ -176,7 +176,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "service-5003-offline-code-review",
-      "v2_handler_source": "api/tools_api.py:1266",
+      "handler_source": "api/tools_api.py:1308",
       "rationale": "Handler returns a static process-liveness payload."
     },
     {
@@ -187,7 +187,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "service-5003-offline-code-review",
-      "v2_handler_source": "api/tools_api.py:1284",
+      "handler_source": "api/tools_api.py:1326",
       "rationale": "Handler authenticates and returns a health snapshot without committing business state."
     },
     {
@@ -198,7 +198,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "service-5003-offline-code-review",
-      "v2_handler_source": "api/tools_api.py:1574",
+      "handler_source": "api/tools_api.py:1608",
       "rationale": "Handler authenticates and returns an inline HTML document; browser-side POST logic is not executed by this GET handler."
     },
     {
@@ -209,7 +209,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "service-5003-offline-code-review",
-      "v2_handler_source": "api/tools_api.py:1688",
+      "handler_source": "api/tools_api.py:1722",
       "rationale": "Handler reads environment variables and local JSON status files and returns a redacted connectivity snapshot."
     },
     {
@@ -220,7 +220,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "service-5003-offline-code-review",
-      "v2_handler_source": "api/tools_api.py:2703",
+      "handler_source": "api/tools_api.py:2714",
       "rationale": "Handler only lists installed skill metadata."
     },
     {
@@ -231,7 +231,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "service-5003-offline-code-review",
-      "v2_handler_source": "api/tools_api.py:2957",
+      "handler_source": "api/tools_api.py:2968",
       "rationale": "Handler validates an identifier and reads the corresponding job record without updating it."
     },
     {
@@ -242,7 +242,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "service-5003-offline-code-review",
-      "v2_handler_source": "api/tools_api.py:3007",
+      "handler_source": "api/tools_api.py:3018",
       "rationale": "Despite POST transport, the handler only lists available snapshots for the named skill."
     },
     {
@@ -253,7 +253,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "service-5003-offline-code-review",
-      "v2_handler_source": "api/tools_api.py:3034",
+      "handler_source": "api/tools_api.py:3045",
       "rationale": "Handler reads stable/canary release state for one skill."
     },
     {
@@ -264,7 +264,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "service-5003-offline-code-review",
-      "v2_handler_source": "api/tools_api.py:3123",
+      "handler_source": "api/tools_api.py:3134",
       "rationale": "Handler reads and summarizes existing skill runtime events."
     },
     {
@@ -275,7 +275,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "service-5003-offline-code-review",
-      "v2_handler_source": "api/tools_api.py:3239",
+      "handler_source": "api/tools_api.py:3250",
       "rationale": "Handler only lists configured static and dynamic Iron Dome patterns."
     },
     {
@@ -286,7 +286,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "service-5003-offline-code-review",
-      "v2_handler_source": "api/tools_api.py:3493",
+      "handler_source": "api/tools_api.py:3499",
       "rationale": "Handler lists pending core-change approval records."
     },
     {
@@ -297,7 +297,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "service-5003-offline-code-review",
-      "v2_handler_source": "api/tools_api.py:3574",
+      "handler_source": "api/tools_api.py:3580",
       "rationale": "Handler performs a keyword query over client records."
     },
     {
@@ -308,7 +308,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "service-5003-offline-code-review",
-      "v2_handler_source": "api/tools_api.py:3599",
+      "handler_source": "api/tools_api.py:3605",
       "rationale": "Handler lists existing meetings for an optional date filter."
     },
     {
@@ -319,7 +319,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "service-5003-offline-code-review",
-      "v2_handler_source": "api/tools_api.py:3647",
+      "handler_source": "api/tools_api.py:3653",
       "rationale": "Handler returns keys from the in-process legacy legal-skill registry."
     },
     {
@@ -330,7 +330,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "service-5003-offline-code-review",
-      "v2_handler_source": "api/tools_api.py:3670",
+      "handler_source": "api/tools_api.py:3676",
       "rationale": "Handler reads, sanitizes, and returns the local definitions JSON file."
     },
     {
@@ -341,7 +341,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "service-5003-offline-code-review",
-      "v2_handler_source": "api/tools_api.py:3744",
+      "handler_source": "api/tools_api.py:3750",
       "rationale": "Handler issues a bounded SELECT over audit_log and only normalizes the returned rows."
     },
     {
@@ -352,7 +352,7 @@
       "side_effect_class": "destructive",
       "reviewed": true,
       "reviewed_by": "service-5003-offline-code-review",
-      "v2_handler_source": "api/tools_api.py:3798",
+      "handler_source": "api/tools_api.py:3804",
       "rationale": "Handler reconstructs and commits an UPDATE from an audit snapshot, overwriting current database values."
     },
     {
@@ -363,7 +363,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-select-only-offline-review",
-      "v2_handler_source": "api/blueprints/osc_settings.py:28",
+      "handler_source": "api/blueprints/osc_settings.py:28",
       "rationale": "GET builds a bounded SELECT over settings and returns normalized rows; replay replaces the database executor with a SELECT-only in-memory fixture."
     },
     {
@@ -374,7 +374,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-select-only-offline-review",
-      "v2_handler_source": "api/blueprints/osc_settings.py:62",
+      "handler_source": "api/blueprints/osc_settings.py:62",
       "rationale": "GET issues one parameterized SELECT for a setting key and treats absence as item:null without mutating state."
     },
     {
@@ -385,7 +385,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-select-only-offline-review",
-      "v2_handler_source": "api/blueprints/osc_settings.py:92",
+      "handler_source": "api/blueprints/osc_settings.py:92",
       "rationale": "GET builds a bounded courts SELECT and returns rows without any write or external call."
     },
     {
@@ -396,7 +396,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-select-only-offline-review",
-      "v2_handler_source": "api/blueprints/osc_settings.py:161",
+      "handler_source": "api/blueprints/osc_settings.py:161",
       "rationale": "GET builds a bounded legal-aid branch SELECT and returns rows without modifying database or external state."
     },
     {
@@ -407,7 +407,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-select-only-offline-review",
-      "v2_handler_source": "api/blueprints/osc_cases.py:4675",
+      "handler_source": "api/blueprints/osc_cases.py:4668",
       "rationale": "GET applies request filters to one bounded SELECT over case reason templates and performs no persistence."
     },
     {
@@ -418,7 +418,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-select-only-offline-review",
-      "v2_handler_source": "api/blueprints/osc_cases.py:4761",
+      "handler_source": "api/blueprints/osc_cases.py:4754",
       "rationale": "GET applies bounded filters to a single activity-log SELECT; unlike POST it creates no audit row."
     },
     {
@@ -429,7 +429,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-select-only-offline-review",
-      "v2_handler_source": "api/blueprints/osc_cases.py:4820",
+      "handler_source": "api/blueprints/osc_cases.py:4813",
       "rationale": "GET issues a bounded SELECT over user settings and only serializes the returned rows."
     },
     {
@@ -440,7 +440,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-select-only-offline-review",
-      "v2_handler_source": "api/blueprints/osc_cases.py:4890",
+      "handler_source": "api/blueprints/osc_cases.py:4883",
       "rationale": "GET issues a bounded memory-keyword SELECT and returns rows without updating memory or access metadata."
     },
     {
@@ -451,7 +451,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-select-only-offline-review",
-      "v2_handler_source": "api/blueprints/osc_cases.py:4968",
+      "handler_source": "api/blueprints/osc_cases.py:4961",
       "rationale": "GET performs one bounded opponents SELECT and has no filesystem, provider, or persistence side effect."
     },
     {
@@ -462,7 +462,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-select-only-offline-review",
-      "v2_handler_source": "api/blueprints/osc_cases.py:5043",
+      "handler_source": "api/blueprints/osc_cases.py:5036",
       "rationale": "GET reads the PDF generation log through one bounded SELECT and does not generate or delete documents."
     },
     {
@@ -473,7 +473,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-select-only-offline-review",
-      "v2_handler_source": "api/blueprints/osc_cases.py:6739",
+      "handler_source": "api/blueprints/osc_cases.py:6734",
       "rationale": "GET performs one bounded template metadata SELECT and does not create or modify documents."
     },
     {
@@ -484,7 +484,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-select-only-offline-review",
-      "v2_handler_source": "api/blueprints/osc_cases.py:6828",
+      "handler_source": "api/blueprints/osc_cases.py:6823",
       "rationale": "GET performs one bounded keyword SELECT and does not change keyword usage counters or document state."
     },
     {
@@ -495,7 +495,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-select-only-offline-review",
-      "v2_handler_source": "api/blueprints/osc_cases.py:6927",
+      "handler_source": "api/blueprints/osc_cases.py:6922",
       "rationale": "GET reads replacement history through one bounded SELECT and performs no replacement or file operation."
     },
     {
@@ -506,7 +506,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-select-only-offline-review",
-      "v2_handler_source": "api/blueprints/osc_cases.py:7396",
+      "handler_source": "api/blueprints/osc_cases.py:7391",
       "rationale": "GET reads quotation template metadata through one bounded SELECT and does not export or persist quotations."
     },
     {
@@ -517,7 +517,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-select-only-offline-review",
-      "v2_handler_source": "api/blueprints/osc_cases.py:7916",
+      "handler_source": "api/blueprints/osc_cases.py:7911",
       "rationale": "GET issues a bounded clients SELECT and only returns the retrieved client rows."
     },
     {
@@ -528,7 +528,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-select-only-offline-review",
-      "v2_handler_source": "api/blueprints/osc_cases.py:8006",
+      "handler_source": "api/blueprints/osc_cases.py:8001",
       "rationale": "GET issues a bounded meetings SELECT and does not book meetings or invoke calendar integrations."
     },
     {
@@ -539,7 +539,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-select-only-offline-review",
-      "v2_handler_source": "api/blueprints/osc_cases.py:8111",
+      "handler_source": "api/blueprints/osc_cases.py:8106",
       "rationale": "GET applies source filters to one bounded todo SELECT and only normalizes rows for the response."
     },
     {
@@ -550,7 +550,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-detail-select-only-offline-review",
-      "v2_handler_source": "api/blueprints/osc_accounting.py:240",
+      "handler_source": "api/blueprints/osc_accounting.py:240",
       "rationale": "GET reads one transaction by id through a parameterized SELECT and returns it without mutation."
     },
     {
@@ -561,7 +561,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-detail-select-only-offline-review",
-      "v2_handler_source": "api/blueprints/osc_accounting.py:438",
+      "handler_source": "api/blueprints/osc_accounting.py:438",
       "rationale": "GET reads one expense default by id through a parameterized SELECT and does not update accounting state."
     },
     {
@@ -572,7 +572,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "osc-accounting-defaults-crud-batch",
-      "v2_handler_source": "api/blueprints/osc_accounting.py:438",
+      "handler_source": "api/blueprints/osc_accounting.py:438",
       "rationale": "PUT updates allowlisted expense-default fields with one bounded UPDATE; offline replay journals it in an in-memory SQLite fixture."
     },
     {
@@ -583,7 +583,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "osc-accounting-defaults-crud-batch",
-      "v2_handler_source": "api/blueprints/osc_accounting.py:438",
+      "handler_source": "api/blueprints/osc_accounting.py:438",
       "rationale": "DELETE removes one expense-default row; offline replay journals the bounded DELETE in an in-memory SQLite fixture without touching production data."
     },
     {
@@ -594,7 +594,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-detail-select-only-offline-review",
-      "v2_handler_source": "api/blueprints/osc_accounting.py:535",
+      "handler_source": "api/blueprints/osc_accounting.py:535",
       "rationale": "GET reads one recurring expense by id through a parameterized SELECT and does not generate transactions."
     },
     {
@@ -605,7 +605,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-detail-select-only-offline-review",
-      "v2_handler_source": "api/blueprints/osc_settings.py:131",
+      "handler_source": "api/blueprints/osc_settings.py:131",
       "rationale": "GET reads one court by id through a parameterized SELECT and returns the row unchanged."
     },
     {
@@ -616,7 +616,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-detail-select-only-offline-review",
-      "v2_handler_source": "api/blueprints/osc_settings.py:196",
+      "handler_source": "api/blueprints/osc_settings.py:196",
       "rationale": "GET reads one legal-aid branch by id through a parameterized SELECT without persistence."
     },
     {
@@ -627,7 +627,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-detail-select-only-offline-review",
-      "v2_handler_source": "api/blueprints/osc_cases.py:4803",
+      "handler_source": "api/blueprints/osc_cases.py:4796",
       "rationale": "GET reads one activity-log row by id and creates no audit or business-state record."
     },
     {
@@ -638,7 +638,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-detail-select-only-offline-review",
-      "v2_handler_source": "api/blueprints/osc_cases.py:4726",
+      "handler_source": "api/blueprints/osc_cases.py:4719",
       "rationale": "GET reads one case-reason template by id through a parameterized SELECT without mutation."
     },
     {
@@ -649,7 +649,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-detail-select-only-offline-review",
-      "v2_handler_source": "api/blueprints/osc_cases.py:7855",
+      "handler_source": "api/blueprints/osc_cases.py:7850",
       "rationale": "GET reads one local calendar event by id and does not contact or update a calendar provider."
     },
     {
@@ -660,7 +660,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-detail-select-only-offline-review",
-      "v2_handler_source": "api/blueprints/osc_cases.py:7973",
+      "handler_source": "api/blueprints/osc_cases.py:7968",
       "rationale": "GET reads one client by id through a parameterized SELECT without updating client state."
     },
     {
@@ -671,7 +671,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-detail-select-only-offline-review",
-      "v2_handler_source": "api/blueprints/osc_cases.py:6889",
+      "handler_source": "api/blueprints/osc_cases.py:6884",
       "rationale": "GET reads one document keyword by id without changing its content or usage count."
     },
     {
@@ -682,7 +682,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-detail-select-only-offline-review",
-      "v2_handler_source": "api/blueprints/osc_cases.py:6970",
+      "handler_source": "api/blueprints/osc_cases.py:6965",
       "rationale": "GET reads one replacement-history row and performs no document or filesystem replacement."
     },
     {
@@ -693,7 +693,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-detail-select-only-offline-review",
-      "v2_handler_source": "api/blueprints/osc_cases.py:6793",
+      "handler_source": "api/blueprints/osc_cases.py:6788",
       "rationale": "GET reads one document-template metadata row and does not create or modify files."
     },
     {
@@ -704,7 +704,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-detail-select-only-offline-review",
-      "v2_handler_source": "api/blueprints/osc_cases.py:8077",
+      "handler_source": "api/blueprints/osc_cases.py:8072",
       "rationale": "GET reads one meeting row and does not book, reschedule, or synchronize an event."
     },
     {
@@ -715,7 +715,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-detail-select-only-offline-review",
-      "v2_handler_source": "api/blueprints/osc_cases.py:4928",
+      "handler_source": "api/blueprints/osc_cases.py:4921",
       "rationale": "GET reads one memory keyword by composite key without changing memory or access metadata."
     },
     {
@@ -726,7 +726,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-detail-select-only-offline-review",
-      "v2_handler_source": "api/blueprints/osc_cases.py:5008",
+      "handler_source": "api/blueprints/osc_cases.py:5001",
       "rationale": "GET reads one opponent row by id and performs no case-state mutation."
     },
     {
@@ -737,7 +737,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-detail-select-only-offline-review",
-      "v2_handler_source": "api/blueprints/osc_cases.py:5068",
+      "handler_source": "api/blueprints/osc_cases.py:5061",
       "rationale": "GET reads one PDF-generation log row and does not generate, open, or delete a PDF."
     },
     {
@@ -748,7 +748,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-detail-select-only-offline-review",
-      "v2_handler_source": "api/blueprints/osc_cases.py:7431",
+      "handler_source": "api/blueprints/osc_cases.py:7426",
       "rationale": "GET reads one quotation-template row without exporting or modifying quotation state."
     },
     {
@@ -759,7 +759,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-detail-select-only-offline-review",
-      "v2_handler_source": "api/blueprints/osc_cases.py:7353",
+      "handler_source": "api/blueprints/osc_cases.py:7348",
       "rationale": "GET reads one quotation by id through a parameterized SELECT without persistence or export."
     },
     {
@@ -770,7 +770,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-detail-select-only-offline-review",
-      "v2_handler_source": "api/blueprints/osc_cases.py:8274",
+      "handler_source": "api/blueprints/osc_cases.py:8269",
       "rationale": "GET reads one todo row and does not complete, update, or synchronize it."
     },
     {
@@ -781,7 +781,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-detail-select-only-offline-review",
-      "v2_handler_source": "api/blueprints/osc_cases.py:4858",
+      "handler_source": "api/blueprints/osc_cases.py:4851",
       "rationale": "GET reads one user-setting row by id and performs no settings mutation."
     },
     {
@@ -792,7 +792,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-read-only-third-batch",
-      "v2_handler_source": "api/blueprints/osc_accounting.py:93",
+      "handler_source": "api/blueprints/osc_accounting.py:93",
       "rationale": "GET applies bounded filters to one transaction SELECT and only serializes rows."
     },
     {
@@ -803,7 +803,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-read-only-third-batch",
-      "v2_handler_source": "api/blueprints/osc_accounting.py:401",
+      "handler_source": "api/blueprints/osc_accounting.py:401",
       "rationale": "GET performs one bounded expense-default SELECT without updating accounting state."
     },
     {
@@ -814,7 +814,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "osc-accounting-defaults-crud-batch",
-      "v2_handler_source": "api/blueprints/osc_accounting.py:401",
+      "handler_source": "api/blueprints/osc_accounting.py:401",
       "rationale": "POST inserts one expense-default row; offline replay binds the INSERT to an in-memory SQLite fixture and records no production or external write."
     },
     {
@@ -825,7 +825,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-read-only-third-batch",
-      "v2_handler_source": "api/blueprints/osc_accounting.py:476",
+      "handler_source": "api/blueprints/osc_accounting.py:476",
       "rationale": "GET performs one bounded recurring-expense SELECT and does not generate transactions."
     },
     {
@@ -836,7 +836,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-read-only-third-batch",
-      "v2_handler_source": "api/blueprints/osc_accounting.py:286",
+      "handler_source": "api/blueprints/osc_accounting.py:286",
       "rationale": "GET computes totals and category summaries from exactly two aggregate SELECT statements."
     },
     {
@@ -847,7 +847,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-read-only-third-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:7253",
+      "handler_source": "api/blueprints/osc_cases.py:7248",
       "rationale": "GET applies bounded filters to one quotation SELECT without persistence or export."
     },
     {
@@ -858,7 +858,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-read-only-third-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:7730",
+      "handler_source": "api/blueprints/osc_cases.py:7725",
       "rationale": "GET reads local calendar rows; replay disables optional todo merging and proves exactly one SELECT with no provider call."
     },
     {
@@ -869,7 +869,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-read-only-third-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:6987",
+      "handler_source": "api/blueprints/osc_cases.py:6982",
       "rationale": "GET reads checklist, lifecycle, and email views through three bounded SELECT statements."
     },
     {
@@ -880,7 +880,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-read-only-third-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:7053",
+      "handler_source": "api/blueprints/osc_cases.py:7048",
       "rationale": "GET reads the bounded legal-aid case master view through one SELECT and normalizes rows."
     },
     {
@@ -891,7 +891,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-read-only-third-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:10415",
+      "handler_source": "api/blueprints/osc_cases.py:10448",
       "rationale": "GET reads active checklist rows for one case number through one parameterized SELECT."
     },
     {
@@ -902,7 +902,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-read-only-third-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:10305",
+      "handler_source": "api/blueprints/osc_cases.py:10338",
       "rationale": "GET reads legal-aid checklist rows for one case number through one parameterized SELECT."
     },
     {
@@ -913,7 +913,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-read-only-third-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:10207",
+      "handler_source": "api/blueprints/osc_cases.py:10240",
       "rationale": "GET is read-only; replay binds the missing-case-number validation branch before any database or filesystem access."
     },
     {
@@ -924,7 +924,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-read-only-third-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:5310",
+      "handler_source": "api/blueprints/osc_cases.py:5305",
       "rationale": "GET reads bounded draft-learning summary and feedback data; replay injects immutable in-memory results."
     },
     {
@@ -935,7 +935,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-read-only-third-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:5086",
+      "handler_source": "api/blueprints/osc_cases.py:5079",
       "rationale": "GET assembles draft configuration metadata; replay injects immutable setting and model values with no I/O."
     },
     {
@@ -946,7 +946,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-read-only-third-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:3460",
+      "handler_source": "api/blueprints/osc_cases.py:3453",
       "rationale": "GET reads a public projection from the process-local job dictionary under its lock without changing the job."
     },
     {
@@ -957,7 +957,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-read-only-third-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:6593",
+      "handler_source": "api/blueprints/osc_cases.py:6588",
       "rationale": "GET only reads allowlisted text files; replay binds the missing-path validation branch before filesystem access."
     },
     {
@@ -968,7 +968,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-read-only-third-batch",
-      "v2_handler_source": "api/blueprints/osc_debt.py:443",
+      "handler_source": "api/blueprints/osc_debt.py:443",
       "rationale": "GET returns the in-process debt form-type definitions without database, filesystem, or provider access."
     },
     {
@@ -979,7 +979,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-read-only-third-batch",
-      "v2_handler_source": "api/blueprints/osc_debt.py:458",
+      "handler_source": "api/blueprints/osc_debt.py:458",
       "rationale": "GET returns the immutable in-process court options without external state access."
     },
     {
@@ -990,7 +990,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-read-only-third-batch",
-      "v2_handler_source": "api/blueprints/osc_debt.py:464",
+      "handler_source": "api/blueprints/osc_debt.py:464",
       "rationale": "GET returns immutable statutory expense reference constants without any I/O."
     },
     {
@@ -1001,7 +1001,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-read-only-third-batch",
-      "v2_handler_source": "api/blueprints/osc_debt.py:449",
+      "handler_source": "api/blueprints/osc_debt.py:449",
       "rationale": "GET returns one immutable in-process form schema selected by the path parameter."
     },
     {
@@ -1012,7 +1012,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-read-only-third-batch",
-      "v2_handler_source": "api/blueprints/osc_pdf.py:2328",
+      "handler_source": "api/blueprints/osc_pdf.py:2328",
       "rationale": "GET only inspects a caller-selected PDF; replay binds the missing-path validation response before filesystem access."
     },
     {
@@ -1023,7 +1023,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "safe-replay-fourth-batch",
-      "v2_handler_source": "api/blueprints/admin_runtime.py:2114",
+      "handler_source": "api/blueprints/admin_runtime.py:2116",
       "rationale": "GET returns skill-document metadata; replay injects an immutable empty listing with no filesystem or external access."
     },
     {
@@ -1034,7 +1034,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "safe-replay-fourth-batch",
-      "v2_handler_source": "api/blueprints/admin_runtime.py:2125",
+      "handler_source": "api/blueprints/admin_runtime.py:2127",
       "rationale": "GET returns product runtime metadata through an injected read-only provider."
     },
     {
@@ -1045,7 +1045,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "safe-replay-fourth-batch",
-      "v2_handler_source": "api/blueprints/admin_runtime.py:1961",
+      "handler_source": "api/blueprints/admin_runtime.py:1963",
       "rationale": "GET reads interview state; replay injects an immutable inactive state and performs no interview mutation."
     },
     {
@@ -1056,7 +1056,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "safe-replay-fourth-batch",
-      "v2_handler_source": "api/blueprints/admin_runtime.py:2037",
+      "handler_source": "api/blueprints/admin_runtime.py:2039",
       "rationale": "GET returns a bounded interview history listing; replay injects an immutable empty history."
     },
     {
@@ -1067,7 +1067,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "safe-replay-fourth-batch",
-      "v2_handler_source": "api/blueprints/admin_runtime.py:2052",
+      "handler_source": "api/blueprints/admin_runtime.py:2054",
       "rationale": "GET validates a skill name and returns version metadata; replay injects one immutable in-memory version."
     },
     {
@@ -1078,7 +1078,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "safe-replay-fourth-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:4547",
+      "handler_source": "api/blueprints/osc_cases.py:4540",
       "rationale": "GET builds the SaaS overview without persistence; replay injects deterministic in-memory domain data."
     },
     {
@@ -1089,7 +1089,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "safe-replay-fourth-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:4596",
+      "handler_source": "api/blueprints/osc_cases.py:4589",
       "rationale": "GET builds a document timeline; replay injects an immutable empty timeline with no I/O."
     },
     {
@@ -1100,7 +1100,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "safe-replay-fourth-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:4603",
+      "handler_source": "api/blueprints/osc_cases.py:4596",
       "rationale": "GET builds task-board projections; replay injects immutable empty boards with no persistence."
     },
     {
@@ -1111,7 +1111,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "safe-replay-fourth-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:4610",
+      "handler_source": "api/blueprints/osc_cases.py:4603",
       "rationale": "GET reads onboarding status; replay injects immutable empty steps and never enters the POST mutation branch."
     },
     {
@@ -1122,7 +1122,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "safe-replay-fourth-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:4625",
+      "handler_source": "api/blueprints/osc_cases.py:4618",
       "rationale": "GET reads notification preferences; replay injects immutable preferences and never enters the POST save branch."
     },
     {
@@ -1133,7 +1133,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "safe-replay-fourth-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:4639",
+      "handler_source": "api/blueprints/osc_cases.py:4632",
       "rationale": "GET returns workflow-template projections from an immutable in-memory fixture."
     },
     {
@@ -1144,7 +1144,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "safe-replay-fourth-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:4645",
+      "handler_source": "api/blueprints/osc_cases.py:4638",
       "rationale": "GET returns AI-governance policy projections from an immutable in-memory fixture."
     },
     {
@@ -1155,7 +1155,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "safe-replay-fourth-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:4651",
+      "handler_source": "api/blueprints/osc_cases.py:4644",
       "rationale": "GET renders an operations report without persistence; replay injects deterministic report data."
     },
     {
@@ -1166,7 +1166,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "safe-replay-fourth-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:4657",
+      "handler_source": "api/blueprints/osc_cases.py:4650",
       "rationale": "GET serializes a diagnostic projection into the response and creates no file; replay injects deterministic data."
     },
     {
@@ -1177,7 +1177,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "safe-replay-fourth-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:5715",
+      "handler_source": "api/blueprints/osc_cases.py:5710",
       "rationale": "GET merges document metadata from exactly two bounded SELECT statements; empty fixtures avoid path inspection."
     },
     {
@@ -1188,7 +1188,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "safe-replay-fourth-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:8541",
+      "handler_source": "api/blueprints/osc_cases.py:8574",
       "rationale": "GET returns merged judgment projections; replay injects an immutable empty result without database or file access."
     },
     {
@@ -1199,7 +1199,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "safe-replay-fourth-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:4364",
+      "handler_source": "api/blueprints/osc_cases.py:4357",
       "rationale": "GET builds an intelligence snapshot; replay injects a deterministic in-memory snapshot with no I/O."
     },
     {
@@ -1210,7 +1210,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "safe-replay-fourth-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:4380",
+      "handler_source": "api/blueprints/osc_cases.py:4373",
       "rationale": "GET builds one case intelligence snapshot; replay returns a nonempty deterministic case result without I/O."
     },
     {
@@ -1221,7 +1221,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "safe-replay-fourth-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:4054",
+      "handler_source": "api/blueprints/osc_cases.py:4047",
       "rationale": "GET reads the client and its case list through exactly two SELECT statements; an empty case list prevents additional queries."
     },
     {
@@ -1232,7 +1232,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "safe-replay-fourth-batch",
-      "v2_handler_source": "api/blueprints/osc_debt.py:571",
+      "handler_source": "api/blueprints/osc_debt.py:571",
       "rationale": "GET reads the bounded consumer-debt case list through one SELECT and only serializes rows."
     },
     {
@@ -1243,7 +1243,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "validation-before-io-fifth-batch",
-      "v2_handler_source": "api/blueprints/osc_settings.py:28",
+      "handler_source": "api/blueprints/osc_settings.py:28",
       "rationale": "POST can upsert a setting; replay binds the missing-key response before the database executor or activity logger is called."
     },
     {
@@ -1254,7 +1254,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "validation-before-io-fifth-batch",
-      "v2_handler_source": "api/blueprints/osc_settings.py:92",
+      "handler_source": "api/blueprints/osc_settings.py:92",
       "rationale": "POST can upsert court data; replay binds missing name/address validation before any database call."
     },
     {
@@ -1265,7 +1265,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "validation-before-io-fifth-batch",
-      "v2_handler_source": "api/blueprints/osc_settings.py:161",
+      "handler_source": "api/blueprints/osc_settings.py:161",
       "rationale": "POST can upsert branch data; replay binds missing name/address validation before any database call."
     },
     {
@@ -1276,7 +1276,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "validation-before-io-fifth-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:4675",
+      "handler_source": "api/blueprints/osc_cases.py:4668",
       "rationale": "POST can insert a template; replay binds missing case type/reason validation before persistence."
     },
     {
@@ -1287,7 +1287,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "validation-before-io-fifth-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:4761",
+      "handler_source": "api/blueprints/osc_cases.py:4754",
       "rationale": "POST can insert an activity row; replay binds missing action validation before the INSERT."
     },
     {
@@ -1298,7 +1298,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "validation-before-io-fifth-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:4820",
+      "handler_source": "api/blueprints/osc_cases.py:4813",
       "rationale": "POST can upsert user settings; replay binds missing hostname/key validation before persistence."
     },
     {
@@ -1309,7 +1309,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "validation-before-io-fifth-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:4890",
+      "handler_source": "api/blueprints/osc_cases.py:4883",
       "rationale": "POST can upsert a memory keyword; replay binds missing composite-key validation before persistence."
     },
     {
@@ -1320,7 +1320,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "validation-before-io-fifth-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:4968",
+      "handler_source": "api/blueprints/osc_cases.py:4961",
       "rationale": "POST can create an opponent; replay binds missing case/name validation before persistence."
     },
     {
@@ -1331,7 +1331,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "validation-before-io-fifth-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:6828",
+      "handler_source": "api/blueprints/osc_cases.py:6823",
       "rationale": "POST can insert or update a document keyword; replay binds missing keyword-name validation before SQL."
     },
     {
@@ -1342,7 +1342,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "validation-before-io-fifth-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:7396",
+      "handler_source": "api/blueprints/osc_cases.py:7391",
       "rationale": "POST can insert a quotation template; replay binds missing-name validation before persistence."
     },
     {
@@ -1353,7 +1353,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "validation-before-io-fifth-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:8006",
+      "handler_source": "api/blueprints/osc_cases.py:8001",
       "rationale": "POST can book a meeting; replay binds required-field validation before database or calendar work."
     },
     {
@@ -1364,7 +1364,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "validation-before-io-fifth-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:8111",
+      "handler_source": "api/blueprints/osc_cases.py:8106",
       "rationale": "POST can deduplicate or insert a todo; replay binds required-field validation before any SELECT or INSERT."
     },
     {
@@ -1375,7 +1375,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "validation-before-io-fifth-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:7253",
+      "handler_source": "api/blueprints/osc_cases.py:7248",
       "rationale": "POST can insert or upsert a quotation; replay binds missing client/project validation before persistence."
     },
     {
@@ -1386,7 +1386,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "validation-before-io-fifth-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:7730",
+      "handler_source": "api/blueprints/osc_cases.py:7725",
       "rationale": "POST can insert a local calendar event; replay binds required-field validation before SQL or provider access."
     },
     {
@@ -1397,7 +1397,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "validation-before-io-fifth-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:10439",
+      "handler_source": "api/blueprints/osc_cases.py:10472",
       "rationale": "POST can upsert a case checklist item; replay binds missing case/label validation before SQL."
     },
     {
@@ -1408,7 +1408,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "validation-before-io-fifth-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:10332",
+      "handler_source": "api/blueprints/osc_cases.py:10365",
       "rationale": "POST can upsert a legal-aid checklist item; replay binds missing case-number validation before SQL."
     },
     {
@@ -1419,7 +1419,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "validation-before-io-fifth-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:10229",
+      "handler_source": "api/blueprints/osc_cases.py:10262",
       "rationale": "POST can replace debt-required checklist rows; replay binds missing case-number validation before SQL."
     },
     {
@@ -1430,7 +1430,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "validation-before-io-fifth-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:8559",
+      "handler_source": "api/blueprints/osc_cases.py:8592",
       "rationale": "POST computes a form preview without persistence; replay binds missing form-type validation before data lookup."
     },
     {
@@ -1441,7 +1441,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "validation-before-io-fifth-batch",
-      "v2_handler_source": "api/blueprints/osc_pdf.py:2338",
+      "handler_source": "api/blueprints/osc_pdf.py:2338",
       "rationale": "POST can persist an uploaded PDF; replay binds the missing-file validation response before directory creation or file writes."
     },
     {
@@ -1452,7 +1452,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "validation-before-io-fifth-batch",
-      "v2_handler_source": "api/blueprints/osc_pdf.py:2357",
+      "handler_source": "api/blueprints/osc_pdf.py:2357",
       "rationale": "POST can create transformed PDF outputs; replay binds missing-path validation before opening or writing a file."
     },
     {
@@ -1463,7 +1463,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-sixth-batch",
-      "v2_handler_source": "api/tools_api.py:1276",
+      "handler_source": "api/tools_api.py:1318",
       "rationale": "GET projects the bound in-memory tools health snapshot; replay replaces dependency probes before dispatch."
     },
     {
@@ -1474,7 +1474,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-sixth-batch",
-      "v2_handler_source": "api/tools_api.py:2083",
+      "handler_source": "api/tools_api.py:2096",
       "rationale": "GET is a health projection; replay binds the delegated node-health provider to an in-memory result."
     },
     {
@@ -1485,7 +1485,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-sixth-batch",
-      "v2_handler_source": "api/tools_api.py:1769",
+      "handler_source": "api/tools_api.py:1803",
       "rationale": "GET combines health projections; replay binds local and remote node probes entirely in memory."
     },
     {
@@ -1496,7 +1496,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-sixth-batch",
-      "v2_handler_source": "api/tools_api.py:3286",
+      "handler_source": "api/tools_api.py:3297",
       "rationale": "GET returns delegated knowledge statistics; replay injects an in-memory AutoSkill statistics provider."
     },
     {
@@ -1507,7 +1507,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-sixth-batch",
-      "v2_handler_source": "api/tools_api.py:2439",
+      "handler_source": "api/tools_api.py:2450",
       "rationale": "GET projects process-local summarization circuit-breaker state without invoking inference."
     },
     {
@@ -1518,7 +1518,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-sixth-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:539",
+      "handler_source": "api/blueprints/dashboard_pages.py:539",
       "rationale": "GET is a pure redirect projection to the intelligence page."
     },
     {
@@ -1529,7 +1529,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-sixth-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:539",
+      "handler_source": "api/blueprints/dashboard_pages.py:539",
       "rationale": "Trailing-slash GET is the same pure redirect projection to the intelligence page."
     },
     {
@@ -1540,7 +1540,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-sixth-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:545",
+      "handler_source": "api/blueprints/dashboard_pages.py:545",
       "rationale": "GET is a pure compatibility redirect to the intelligence page."
     },
     {
@@ -1551,7 +1551,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-sixth-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:545",
+      "handler_source": "api/blueprints/dashboard_pages.py:545",
       "rationale": "Trailing-slash GET is the same pure compatibility redirect to the intelligence page."
     },
     {
@@ -1562,7 +1562,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-sixth-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:1139",
+      "handler_source": "api/blueprints/dashboard_pages.py:1145",
       "rationale": "GET is a pure route projection redirecting to the Golem console."
     },
     {
@@ -1573,7 +1573,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-sixth-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:1145",
+      "handler_source": "api/blueprints/dashboard_pages.py:1151",
       "rationale": "GET is a pure legacy route projection redirecting to the Golem console."
     },
     {
@@ -1584,7 +1584,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-sixth-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:1099",
+      "handler_source": "api/blueprints/dashboard_pages.py:1105",
       "rationale": "GET renders a static dashboard projection; replay binds template rendering in memory."
     },
     {
@@ -1595,7 +1595,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-sixth-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:1168",
+      "handler_source": "api/blueprints/dashboard_pages.py:1174",
       "rationale": "GET renders the NERV dashboard projection with in-memory template binding."
     },
     {
@@ -1606,7 +1606,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-sixth-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:1168",
+      "handler_source": "api/blueprints/dashboard_pages.py:1174",
       "rationale": "GET renders the NERV dashboard projection with in-memory template binding."
     },
     {
@@ -1617,7 +1617,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-sixth-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:1168",
+      "handler_source": "api/blueprints/dashboard_pages.py:1174",
       "rationale": "GET renders the NERV dashboard projection with in-memory template binding."
     },
     {
@@ -1628,7 +1628,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-sixth-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:1168",
+      "handler_source": "api/blueprints/dashboard_pages.py:1174",
       "rationale": "GET renders the NERV dashboard projection with in-memory template binding."
     },
     {
@@ -1639,7 +1639,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-sixth-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:1175",
+      "handler_source": "api/blueprints/dashboard_pages.py:1181",
       "rationale": "GET renders the Golem console projection with in-memory template binding."
     },
     {
@@ -1650,7 +1650,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-sixth-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:1175",
+      "handler_source": "api/blueprints/dashboard_pages.py:1181",
       "rationale": "GET renders the Golem console projection with in-memory template binding."
     },
     {
@@ -1661,7 +1661,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-sixth-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:1244",
+      "handler_source": "api/blueprints/dashboard_pages.py:1250",
       "rationale": "GET projects a web manifest from an in-memory mobile configuration fixture."
     },
     {
@@ -1672,7 +1672,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-sixth-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:1230",
+      "handler_source": "api/blueprints/dashboard_pages.py:1236",
       "rationale": "GET reads and returns the repository service-worker asset without mutation."
     },
     {
@@ -1683,7 +1683,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-seventh-batch",
-      "v2_handler_source": "api/blueprints/admin_runtime.py:2308",
+      "handler_source": "api/blueprints/admin_runtime.py:2310",
       "rationale": "GET projects delegated distributed-runtime status; replay binds the status provider and admin identity in memory."
     },
     {
@@ -1694,7 +1694,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-seventh-batch",
-      "v2_handler_source": "api/blueprints/admin_runtime.py:3074",
+      "handler_source": "api/blueprints/admin_runtime.py:3077",
       "rationale": "GET projects the exclusion list; replay injects a deterministic in-memory loader."
     },
     {
@@ -1705,7 +1705,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-seventh-batch",
-      "v2_handler_source": "api/blueprints/admin_runtime.py:3010",
+      "handler_source": "api/blueprints/admin_runtime.py:3013",
       "rationale": "GET reads a bounded tail from a sandbox-only log fixture without mutation."
     },
     {
@@ -1716,7 +1716,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-seventh-batch",
-      "v2_handler_source": "api/blueprints/admin_runtime.py:2165",
+      "handler_source": "api/blueprints/admin_runtime.py:2167",
       "rationale": "GET projects environment configuration from a sandbox-only missing env fixture."
     },
     {
@@ -1727,7 +1727,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-seventh-batch",
-      "v2_handler_source": "api/blueprints/admin_runtime.py:2215",
+      "handler_source": "api/blueprints/admin_runtime.py:2217",
       "rationale": "GET projects a skill detail from sandbox-bound nonexistent document and action paths."
     },
     {
@@ -1738,7 +1738,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-seventh-batch",
-      "v2_handler_source": "api/blueprints/admin_runtime.py:2999",
+      "handler_source": "api/blueprints/admin_runtime.py:3002",
       "rationale": "GET reads and returns a deterministic sandbox-only status document."
     },
     {
@@ -1749,7 +1749,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-seventh-batch",
-      "v2_handler_source": "api/blueprints/admin_runtime.py:3287",
+      "handler_source": "api/blueprints/admin_runtime.py:3291",
       "rationale": "Unauthenticated GET returns the process-only liveness projection before aggregate dependency probes."
     },
     {
@@ -1760,7 +1760,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-seventh-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:1206",
+      "handler_source": "api/blueprints/dashboard_pages.py:1212",
       "rationale": "GET renders the mobile-home projection with in-memory configuration and template bindings."
     },
     {
@@ -1771,7 +1771,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-seventh-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:1206",
+      "handler_source": "api/blueprints/dashboard_pages.py:1212",
       "rationale": "GET renders the mobile-home projection with in-memory configuration and template bindings."
     },
     {
@@ -1782,7 +1782,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-seventh-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:1216",
+      "handler_source": "api/blueprints/dashboard_pages.py:1222",
       "rationale": "GET renders the mobile-admin projection with in-memory configuration and template bindings."
     },
     {
@@ -1793,7 +1793,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-seventh-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:1216",
+      "handler_source": "api/blueprints/dashboard_pages.py:1222",
       "rationale": "GET renders the mobile-admin projection with in-memory configuration and template bindings."
     },
     {
@@ -1804,7 +1804,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-seventh-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:1152",
+      "handler_source": "api/blueprints/dashboard_pages.py:1158",
       "rationale": "GET renders a dashboard projection with its model and template bound in memory."
     },
     {
@@ -1815,7 +1815,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-seventh-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:1152",
+      "handler_source": "api/blueprints/dashboard_pages.py:1158",
       "rationale": "GET renders a dashboard projection with its model and template bound in memory."
     },
     {
@@ -1826,7 +1826,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-seventh-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:1159",
+      "handler_source": "api/blueprints/dashboard_pages.py:1165",
       "rationale": "GET renders a status projection with its model and template bound in memory."
     },
     {
@@ -1837,7 +1837,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-seventh-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:1159",
+      "handler_source": "api/blueprints/dashboard_pages.py:1165",
       "rationale": "GET renders a status projection with its model and template bound in memory."
     },
     {
@@ -1848,7 +1848,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-seventh-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:1276",
+      "handler_source": "api/blueprints/dashboard_pages.py:1282",
       "rationale": "GET renders the website-admin shell with template rendering bound in memory."
     },
     {
@@ -1859,7 +1859,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-seventh-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:1093",
+      "handler_source": "api/blueprints/dashboard_pages.py:1099",
       "rationale": "GET renders the research projection with its dashboard model and template bound in memory."
     },
     {
@@ -1870,7 +1870,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-seventh-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:1093",
+      "handler_source": "api/blueprints/dashboard_pages.py:1099",
       "rationale": "GET renders the research projection with its dashboard model and template bound in memory."
     },
     {
@@ -1881,7 +1881,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-seventh-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:551",
+      "handler_source": "api/blueprints/dashboard_pages.py:551",
       "rationale": "GET renders the intelligence projection with an empty in-memory report list."
     },
     {
@@ -1892,7 +1892,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-seventh-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:1225",
+      "handler_source": "api/blueprints/dashboard_pages.py:1231",
       "rationale": "GET projects the mobile configuration from an in-memory fixture."
     },
     {
@@ -1903,7 +1903,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-eighth-batch",
-      "v2_handler_source": "api/blueprints/admin_runtime.py:3139",
+      "handler_source": "api/blueprints/admin_runtime.py:3142",
       "rationale": "GET scope=saas projects an in-memory readiness provider without dependency probes."
     },
     {
@@ -1914,7 +1914,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-eighth-batch",
-      "v2_handler_source": "api/blueprints/admin_runtime.py:3282",
+      "handler_source": "api/blueprints/admin_runtime.py:3286",
       "rationale": "GET projects an in-memory SaaS readiness provider without external state access."
     },
     {
@@ -1925,7 +1925,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-eighth-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:1105",
+      "handler_source": "api/blueprints/dashboard_pages.py:1111",
       "rationale": "GET renders a recognized feed using in-memory research, fetch, and template bindings."
     },
     {
@@ -1936,7 +1936,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-eighth-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:1559",
+      "handler_source": "api/blueprints/osc_cases.py:1552",
       "rationale": "GET lists cases through one SELECT-only in-memory query."
     },
     {
@@ -1947,7 +1947,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "isolated-eighth-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:1559",
+      "handler_source": "api/blueprints/osc_cases.py:1552",
       "rationale": "POST can persist a case; replay binds missing-client validation before SQL or path work."
     },
     {
@@ -1958,7 +1958,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-eighth-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:8348",
+      "handler_source": "api/blueprints/osc_cases.py:8343",
       "rationale": "GET projects an in-memory insight collection with cleanup bound to a no-op."
     },
     {
@@ -1969,7 +1969,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "isolated-eighth-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:8348",
+      "handler_source": "api/blueprints/osc_cases.py:8343",
       "rationale": "POST can insert an insight; replay binds missing-text validation before persistence."
     },
     {
@@ -1980,7 +1980,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-eighth-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:8421",
+      "handler_source": "api/blueprints/osc_cases.py:8418",
       "rationale": "GET resolves a synthetic insight from an in-memory collection without SQL."
     },
     {
@@ -1991,7 +1991,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-eighth-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:9742",
+      "handler_source": "api/blueprints/osc_cases.py:9775",
       "rationale": "GET projects a bound in-memory archive preview."
     },
     {
@@ -2002,7 +2002,7 @@
       "side_effect_class": "destructive",
       "reviewed": true,
       "reviewed_by": "isolated-eighth-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:9753",
+      "handler_source": "api/blueprints/osc_cases.py:9786",
       "rationale": "Normal execution can archive files; replay binds confirm-required validation before lookup, file, or SQL effects."
     },
     {
@@ -2013,7 +2013,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-eighth-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:10655",
+      "handler_source": "api/blueprints/osc_cases.py:10688",
       "rationale": "GET lists an empty sandbox-only backup directory."
     },
     {
@@ -2024,7 +2024,7 @@
       "side_effect_class": "destructive",
       "reviewed": true,
       "reviewed_by": "isolated-eighth-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:10679",
+      "handler_source": "api/blueprints/osc_cases.py:10712",
       "rationale": "Normal restore is destructive; replay binds filename validation before path lookup or restore effects."
     },
     {
@@ -2035,7 +2035,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-eighth-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:5881",
+      "handler_source": "api/blueprints/osc_cases.py:5876",
       "rationale": "GET uses one SELECT-only query with path candidates bound to an empty in-memory projection."
     },
     {
@@ -2046,7 +2046,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-eighth-batch",
-      "v2_handler_source": "api/blueprints/osc_debt.py:477",
+      "handler_source": "api/blueprints/osc_debt.py:477",
       "rationale": "GET projects a bound in-memory source-status provider."
     },
     {
@@ -2057,7 +2057,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-eighth-batch",
-      "v2_handler_source": "api/blueprints/osc_debt.py:486",
+      "handler_source": "api/blueprints/osc_debt.py:486",
       "rationale": "GET projects an in-memory debt import candidate provider."
     },
     {
@@ -2068,7 +2068,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-eighth-batch",
-      "v2_handler_source": "api/blueprints/osc_debt.py:602",
+      "handler_source": "api/blueprints/osc_debt.py:602",
       "rationale": "GET projects in-memory address options without reading CSV state."
     },
     {
@@ -2079,7 +2079,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-eighth-batch",
-      "v2_handler_source": "api/blueprints/osc_debt.py:497",
+      "handler_source": "api/blueprints/osc_debt.py:497",
       "rationale": "GET uses one SELECT-only row and stops on missing folder configuration before filesystem scanning."
     },
     {
@@ -2090,7 +2090,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-eighth-batch",
-      "v2_handler_source": "api/blueprints/osc_accounting.py:302",
+      "handler_source": "api/blueprints/osc_accounting.py:302",
       "rationale": "GET dry-run dispatch uses an in-memory sheet-import provider with no network or persistence."
     },
     {
@@ -2101,7 +2101,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-eighth-batch",
-      "v2_handler_source": "api/blueprints/osc_accounting.py:338",
+      "handler_source": "api/blueprints/osc_accounting.py:338",
       "rationale": "GET computes a bound in-memory monthly-bonus projection without commit or refresh."
     },
     {
@@ -2112,7 +2112,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-eighth-batch",
-      "v2_handler_source": "api/blueprints/osc_accounting.py:375",
+      "handler_source": "api/blueprints/osc_accounting.py:375",
       "rationale": "GET serves a prebuilt sandbox fixture from bound in-memory bonus calculation and writer providers."
     },
     {
@@ -2123,7 +2123,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-ninth-batch",
-      "v2_handler_source": "api/blueprints/osc_accounting.py:136",
+      "handler_source": "api/blueprints/osc_accounting.py:136",
       "rationale": "GET renders one SELECT-only in-memory transaction row to a temporary XLSX inside the worker sandbox."
     },
     {
@@ -2134,7 +2134,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-ninth-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:1861",
+      "handler_source": "api/blueprints/osc_cases.py:1854",
       "rationale": "GET projects one SELECT-only in-memory case detail row."
     },
     {
@@ -2145,7 +2145,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-ninth-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:9473",
+      "handler_source": "api/blueprints/osc_cases.py:9506",
       "rationale": "GET serializes one SELECT-only in-memory case row directly to the response."
     },
     {
@@ -2156,7 +2156,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-ninth-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:9494",
+      "handler_source": "api/blueprints/osc_cases.py:9527",
       "rationale": "GET serializes one SELECT-only in-memory case row to an in-memory XLSX response."
     },
     {
@@ -2167,7 +2167,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-ninth-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:9626",
+      "handler_source": "api/blueprints/osc_cases.py:9659",
       "rationale": "GET serializes one SELECT-only in-memory client row directly to the response."
     },
     {
@@ -2178,7 +2178,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-ninth-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:4400",
+      "handler_source": "api/blueprints/osc_cases.py:4393",
       "rationale": "GET aggregates a fixed-window SELECT-only in-memory dashboard fixture."
     },
     {
@@ -2189,7 +2189,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-ninth-batch",
-      "v2_handler_source": "api/blueprints/osc_gcal.py:174",
+      "handler_source": "api/blueprints/osc_gcal.py:174",
       "rationale": "GET projects patched in-memory Google Calendar configuration and token health without reading live credentials."
     },
     {
@@ -2200,7 +2200,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-ninth-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:3555",
+      "handler_source": "api/blueprints/osc_cases.py:3548",
       "rationale": "GET uses one SELECT-only case row and a bound empty-folder provider, with no filesystem traversal."
     },
     {
@@ -2211,7 +2211,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-ninth-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:3847",
+      "handler_source": "api/blueprints/osc_cases.py:3840",
       "rationale": "GET uses one SELECT-only case row and stops on the bound empty-folder fixture before filesystem search."
     },
     {
@@ -2222,7 +2222,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-ninth-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:3782",
+      "handler_source": "api/blueprints/osc_cases.py:3775",
       "rationale": "GET uses one SELECT-only case row and stops on the bound empty-folder fixture before filesystem traversal."
     },
     {
@@ -2233,7 +2233,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-ninth-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:4183",
+      "handler_source": "api/blueprints/osc_cases.py:4176",
       "rationale": "GET assembles a ten-query SELECT-only in-memory workbench fixture with folder guessing disabled."
     },
     {
@@ -2244,7 +2244,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-ninth-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:11248",
+      "handler_source": "api/blueprints/osc_cases.py:11281",
       "rationale": "GET stops at recipient validation before any database, PDF, or filesystem operation."
     },
     {
@@ -2255,7 +2255,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-ninth-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:11134",
+      "handler_source": "api/blueprints/osc_cases.py:11167",
       "rationale": "GET serves bound in-memory PDF bytes after one SELECT-only quotation lookup."
     },
     {
@@ -2266,7 +2266,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "isolated-ninth-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:9374",
+      "handler_source": "api/blueprints/osc_cases.py:9407",
       "rationale": "POST is dispatched without a file and stops at validation before parsing or persistence."
     },
     {
@@ -2277,7 +2277,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "isolated-ninth-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:9539",
+      "handler_source": "api/blueprints/osc_cases.py:9572",
       "rationale": "POST is dispatched without a file and stops at validation before parsing or persistence."
     },
     {
@@ -2288,7 +2288,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-ninth-batch",
-      "v2_handler_source": "api/blueprints/golem_console.py:255",
+      "handler_source": "api/blueprints/golem_console.py:255",
       "rationale": "GET projects bound sandbox paths and an in-memory process-monitor fixture."
     },
     {
@@ -2299,7 +2299,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-ninth-batch",
-      "v2_handler_source": "api/blueprints/golem_console.py:282",
+      "handler_source": "api/blueprints/golem_console.py:282",
       "rationale": "GET lists API-key metadata from a sandbox-local in-memory fixture."
     },
     {
@@ -2310,7 +2310,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-ninth-batch",
-      "v2_handler_source": "api/blueprints/golem_console.py:337",
+      "handler_source": "api/blueprints/golem_console.py:337",
       "rationale": "GET lists a sandbox-local skill definition fixture."
     },
     {
@@ -2321,7 +2321,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-ninth-batch",
-      "v2_handler_source": "api/blueprints/golem_console.py:346",
+      "handler_source": "api/blueprints/golem_console.py:346",
       "rationale": "GET reads only a sandbox-local log fixture."
     },
     {
@@ -2332,7 +2332,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-ninth-batch",
-      "v2_handler_source": "api/blueprints/golem_console.py:362",
+      "handler_source": "api/blueprints/golem_console.py:362",
       "rationale": "POST uses an empty command and stops at validation before command routing, subprocess, or persistence."
     },
     {
@@ -2343,7 +2343,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-tenth-batch",
-      "v2_handler_source": "api/server.py:821",
+      "handler_source": "api/server.py:822",
       "rationale": "GET takes the non-mobile branch and returns the fixed dashboard redirect without external I/O."
     },
     {
@@ -2354,7 +2354,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-tenth-batch",
-      "v2_handler_source": "api/server.py:830",
+      "handler_source": "api/server.py:831",
       "rationale": "GET returns the handler's static empty 204 response."
     },
     {
@@ -2365,7 +2365,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-tenth-batch",
-      "v2_handler_source": "api/server.py:835",
+      "handler_source": "api/server.py:836",
       "rationale": "GET renders a bound in-memory login template without database access."
     },
     {
@@ -2376,7 +2376,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "isolated-tenth-batch",
-      "v2_handler_source": "api/server.py:907",
+      "handler_source": "api/server.py:908",
       "rationale": "GET clears only the worker-local test-client session and returns the login redirect."
     },
     {
@@ -2387,7 +2387,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-tenth-batch",
-      "v2_handler_source": "api/server.py:875",
+      "handler_source": "api/server.py:876",
       "rationale": "GET renders a bound in-memory registration template without database access."
     },
     {
@@ -2398,7 +2398,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "isolated-tenth-batch",
-      "v2_handler_source": "api/server.py:870",
+      "handler_source": "api/server.py:871",
       "rationale": "GET clears only the worker-local test-client session and returns the fixed mobile login redirect."
     },
     {
@@ -2409,7 +2409,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-tenth-batch",
-      "v2_handler_source": "api/server.py:615",
+      "handler_source": "api/server.py:616",
       "rationale": "GET renders a bound in-memory OSC template with authentication disabled only inside the worker."
     },
     {
@@ -2420,7 +2420,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-tenth-batch",
-      "v2_handler_source": "api/server.py:621",
+      "handler_source": "api/server.py:622",
       "rationale": "GET renders a bound in-memory OSC debt template with authentication disabled only inside the worker."
     },
     {
@@ -2431,7 +2431,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-tenth-batch",
-      "v2_handler_source": "api/blueprints/lottery.py:206",
+      "handler_source": "api/blueprints/lottery.py:206",
       "rationale": "GET renders a bound in-memory lottery template without reading upload state."
     },
     {
@@ -2442,7 +2442,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-tenth-batch",
-      "v2_handler_source": "api/server.py:919",
+      "handler_source": "api/server.py:920",
       "rationale": "GET returns the static LINE webhook reachability response before rate limiting, signature handling, or state writes."
     },
     {
@@ -2453,7 +2453,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-tenth-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:1275",
+      "handler_source": "api/blueprints/osc_cases.py:1268",
       "rationale": "GET projects failover metadata and twenty SELECT-only queries from a fully in-memory connection fixture."
     },
     {
@@ -2464,7 +2464,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-eleventh-batch",
-      "v2_handler_source": "api/blueprints/web_runtime.py:841",
+      "handler_source": "api/blueprints/web_runtime.py:841",
       "rationale": "GET runs with isolated_runtime enabled and resolves all optional index paths beneath the empty worker sandbox."
     },
     {
@@ -2475,7 +2475,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-eleventh-batch",
-      "v2_handler_source": "api/blueprints/admin_runtime.py:1804",
+      "handler_source": "api/blueprints/admin_runtime.py:1806",
       "rationale": "GET uses a fully injected synthetic remote-access provider containing no live host, network, process, or configuration values."
     },
     {
@@ -2486,7 +2486,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-eleventh-batch",
-      "v2_handler_source": "api/blueprints/admin_runtime.py:1764",
+      "handler_source": "api/blueprints/admin_runtime.py:1766",
       "rationale": "GET serves a pre-seeded synthetic closure cache before any network, database, subprocess, or live-state health probe."
     },
     {
@@ -2497,7 +2497,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-eleventh-batch",
-      "v2_handler_source": "api/blueprints/admin_runtime.py:1764",
+      "handler_source": "api/blueprints/admin_runtime.py:1766",
       "rationale": "GET serves the same pre-seeded synthetic closure cache before any dynamic health probe."
     },
     {
@@ -2508,7 +2508,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-eleventh-batch",
-      "v2_handler_source": "api/blueprints/web_runtime.py:1294",
+      "handler_source": "api/blueprints/web_runtime.py:1294",
       "rationale": "GET resolves the optional judgment fixture only beneath an empty worker sandbox root."
     },
     {
@@ -2519,7 +2519,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-eleventh-batch",
-      "v2_handler_source": "api/blueprints/web_runtime.py:1276",
+      "handler_source": "api/blueprints/web_runtime.py:1276",
       "rationale": "GET drains only a worker-local in-memory notification list for a synthetic user."
     },
     {
@@ -2530,7 +2530,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-eleventh-batch",
-      "v2_handler_source": "api/server.py:627",
+      "handler_source": "api/server.py:628",
       "rationale": "GET serves a pre-created proof file after the handler export root is bound to the worker sandbox."
     },
     {
@@ -2541,7 +2541,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-twelfth-batch",
-      "v2_handler_source": "api/blueprints/admin_runtime.py:3026",
+      "handler_source": "api/blueprints/admin_runtime.py:3029",
       "rationale": "GET dispatches the real aggregate handler while every process, tools, NAS, drive, DB and model collector is bound to an in-memory fixture."
     },
     {
@@ -2552,7 +2552,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-twelfth-batch",
-      "v2_handler_source": "api/blueprints/web_runtime.py:975",
+      "handler_source": "api/blueprints/web_runtime.py:975",
       "rationale": "GET dispatches the real projection over an in-memory process snapshot and sandbox-only guardian paths, with subprocess and live-state access guarded."
     },
     {
@@ -2563,7 +2563,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-twelfth-batch",
-      "v2_handler_source": "api/blueprints/web_runtime.py:836",
+      "handler_source": "api/blueprints/web_runtime.py:836",
       "rationale": "GET dispatches the real authenticated page handler with template rendering replaced by a deterministic in-memory renderer."
     },
     {
@@ -2574,7 +2574,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-thirteenth-batch",
-      "v2_handler_source": "skills/ops/iron_dome_sync.py:330",
+      "handler_source": "skills/ops/iron_dome_sync.py:229",
       "rationale": "GET dispatches the real projection with the pattern hash and node identity bound to deterministic in-memory values."
     },
     {
@@ -2585,7 +2585,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-thirteenth-batch",
-      "v2_handler_source": "skills/ops/iron_dome_sync.py:334",
+      "handler_source": "skills/ops/iron_dome_sync.py:233",
       "rationale": "GET dispatches the real projection with pattern export bound in memory and no file or network access."
     },
     {
@@ -2596,7 +2596,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-thirteenth-batch",
-      "v2_handler_source": "skills/ops/iron_dome_sync.py:346",
+      "handler_source": "skills/ops/iron_dome_sync.py:245",
       "rationale": "GET dispatches the real projection over an in-memory sync snapshot, preventing all remote peer probes."
     },
     {
@@ -2607,7 +2607,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-fourteenth-batch",
-      "v2_handler_source": "api/blueprints/osc_files.py:1251",
+      "handler_source": "api/blueprints/osc_files.py:1251",
       "rationale": "GET dispatches the real business-root projection with both configured roots and child listings bound beneath the worker sandbox."
     },
     {
@@ -2618,7 +2618,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-fifteenth-batch",
-      "v2_handler_source": "api/blueprints/raziel.py:641",
+      "handler_source": "api/blueprints/raziel.py:641",
       "rationale": "GET dispatches the real status handler with config, TLR health, script and result paths bound entirely beneath the worker sandbox."
     },
     {
@@ -2629,7 +2629,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-fifteenth-batch",
-      "v2_handler_source": "api/blueprints/raziel.py:712",
+      "handler_source": "api/blueprints/raziel.py:712",
       "rationale": "GET dispatches the real safe-name and send-file path over a pre-created sandbox delivery artifact."
     },
     {
@@ -2640,7 +2640,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-fifteenth-batch",
-      "v2_handler_source": "api/blueprints/raziel.py:724",
+      "handler_source": "api/blueprints/raziel.py:724",
       "rationale": "GET dispatches the real result lookup and send-file path over a pre-created sandbox result artifact."
     },
     {
@@ -2651,7 +2651,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-sixteenth-batch",
-      "v2_handler_source": "api/webhooks/telegram.py:982",
+      "handler_source": "api/webhooks/telegram.py:982",
       "rationale": "GET dispatches the real health-probe branch, which returns OK before rate limits, secrets, queues, background work or provider access."
     },
     {
@@ -2662,7 +2662,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "isolated-seventeenth-batch",
-      "v2_handler_source": "api/blueprints/osc_files.py:2132",
+      "handler_source": "api/blueprints/osc_files.py:2132",
       "rationale": "GET dispatches the real public-share streaming handler over a pre-created sandbox cache, persists exactly one download to a sandbox-only store and binds the audit dependency in memory."
     },
     {
@@ -2673,7 +2673,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-eighteenth-batch",
-      "v2_handler_source": "api/server.py:642",
+      "handler_source": "api/server.py:643",
       "rationale": "GET dispatches the real allowlisted compatibility proxy while the upstream resolver and urlopen response are bound in memory."
     },
     {
@@ -2684,7 +2684,7 @@
       "side_effect_class": "external_commit",
       "reviewed": true,
       "reviewed_by": "isolated-eighteenth-batch",
-      "v2_handler_source": "api/server.py:642",
+      "handler_source": "api/server.py:643",
       "rationale": "POST dispatches and forwards through the real compatibility proxy to a deterministic in-memory upstream, proving method and body forwarding without an external commit."
     },
     {
@@ -2695,7 +2695,7 @@
       "side_effect_class": "external_commit",
       "reviewed": true,
       "reviewed_by": "isolated-eighteenth-batch",
-      "v2_handler_source": "api/server.py:642",
+      "handler_source": "api/server.py:643",
       "rationale": "PUT dispatches and forwards through the real compatibility proxy to a deterministic in-memory upstream, proving method and body forwarding without an external commit."
     },
     {
@@ -2706,7 +2706,7 @@
       "side_effect_class": "external_commit",
       "reviewed": true,
       "reviewed_by": "isolated-eighteenth-batch",
-      "v2_handler_source": "api/server.py:642",
+      "handler_source": "api/server.py:643",
       "rationale": "PATCH dispatches and forwards through the real compatibility proxy to a deterministic in-memory upstream, proving method and body forwarding without an external commit."
     },
     {
@@ -2717,7 +2717,7 @@
       "side_effect_class": "external_commit",
       "reviewed": true,
       "reviewed_by": "isolated-eighteenth-batch",
-      "v2_handler_source": "api/server.py:642",
+      "handler_source": "api/server.py:643",
       "rationale": "DELETE dispatches and forwards through the real compatibility proxy to a deterministic in-memory upstream, proving method and body forwarding without an external commit."
     },
     {
@@ -2728,7 +2728,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-eighteenth-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:1289",
+      "handler_source": "api/blueprints/dashboard_pages.py:1295",
       "rationale": "GET dispatches the real website-admin root proxy with its requests upstream bound to a deterministic in-memory response."
     },
     {
@@ -2739,7 +2739,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-eighteenth-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:1289",
+      "handler_source": "api/blueprints/dashboard_pages.py:1295",
       "rationale": "GET dispatches the real website-admin path proxy with its requests upstream bound to a deterministic in-memory response."
     },
     {
@@ -2750,7 +2750,7 @@
       "side_effect_class": "external_commit",
       "reviewed": true,
       "reviewed_by": "isolated-eighteenth-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:1289",
+      "handler_source": "api/blueprints/dashboard_pages.py:1295",
       "rationale": "POST dispatches through the real website-admin path proxy to an in-memory upstream, proving body forwarding without a live service commit."
     },
     {
@@ -2761,7 +2761,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "osc-transactional-crud-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:4803",
+      "handler_source": "api/blueprints/osc_cases.py:4796",
       "rationale": "DELETE issues one bounded activity_logs deletion; replay journals the exact SQL kind and table in an in-memory SQLite fixture."
     },
     {
@@ -2772,7 +2772,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "osc-transactional-crud-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:7855",
+      "handler_source": "api/blueprints/osc_cases.py:7850",
       "rationale": "PUT updates allowlisted calendar-event fields without provider access; replay journals its bounded UPDATE in memory."
     },
     {
@@ -2783,7 +2783,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "osc-transactional-crud-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:7855",
+      "handler_source": "api/blueprints/osc_cases.py:7850",
       "rationale": "DELETE removes one local calendar-event row; replay journals its bounded DELETE in memory without calendar-provider access."
     },
     {
@@ -2794,7 +2794,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "osc-transactional-crud-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:4726",
+      "handler_source": "api/blueprints/osc_cases.py:4719",
       "rationale": "PUT updates one template and emits its activity-log write; both SQL effects are journaled in memory."
     },
     {
@@ -2805,7 +2805,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "osc-transactional-crud-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:4726",
+      "handler_source": "api/blueprints/osc_cases.py:4719",
       "rationale": "DELETE removes one template and emits its activity-log write; both SQL effects are journaled in memory."
     },
     {
@@ -2816,7 +2816,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "osc-transactional-crud-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:7916",
+      "handler_source": "api/blueprints/osc_cases.py:7911",
       "rationale": "POST uses a canonical fixture client ID and performs one bounded clients INSERT in the in-memory transaction journal."
     },
     {
@@ -2827,7 +2827,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "osc-transactional-crud-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:7973",
+      "handler_source": "api/blueprints/osc_cases.py:7968",
       "rationale": "PUT updates allowlisted client fields with one bounded UPDATE journaled in memory."
     },
     {
@@ -2838,7 +2838,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "osc-transactional-crud-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:7973",
+      "handler_source": "api/blueprints/osc_cases.py:7968",
       "rationale": "DELETE removes one client row with one bounded DELETE journaled in memory."
     },
     {
@@ -2849,7 +2849,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "osc-transactional-crud-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:6889",
+      "handler_source": "api/blueprints/osc_cases.py:6884",
       "rationale": "PUT updates allowlisted document-keyword fields with one bounded UPDATE journaled in memory."
     },
     {
@@ -2860,7 +2860,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "osc-transactional-crud-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:6889",
+      "handler_source": "api/blueprints/osc_cases.py:6884",
       "rationale": "DELETE removes one document-keyword row with one bounded DELETE journaled in memory."
     },
     {
@@ -2871,7 +2871,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "osc-transactional-crud-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:8077",
+      "handler_source": "api/blueprints/osc_cases.py:8072",
       "rationale": "PUT updates allowlisted meeting fields locally with one bounded UPDATE journaled in memory."
     },
     {
@@ -2882,7 +2882,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "osc-transactional-crud-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:8077",
+      "handler_source": "api/blueprints/osc_cases.py:8072",
       "rationale": "DELETE removes one meeting row locally with one bounded DELETE journaled in memory."
     },
     {
@@ -2893,7 +2893,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "osc-transactional-crud-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:4928",
+      "handler_source": "api/blueprints/osc_cases.py:4921",
       "rationale": "PUT updates one composite-key memory keyword and emits its activity-log write; both are journaled in memory."
     },
     {
@@ -2904,7 +2904,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "osc-transactional-crud-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:4928",
+      "handler_source": "api/blueprints/osc_cases.py:4921",
       "rationale": "DELETE removes one composite-key memory keyword and emits its activity-log write; both are journaled in memory."
     },
     {
@@ -2915,7 +2915,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "osc-transactional-crud-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:5008",
+      "handler_source": "api/blueprints/osc_cases.py:5001",
       "rationale": "PUT updates one opponent and emits its activity-log write; both SQL effects are journaled in memory."
     },
     {
@@ -2926,7 +2926,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "osc-transactional-crud-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:5008",
+      "handler_source": "api/blueprints/osc_cases.py:5001",
       "rationale": "DELETE removes one opponent and emits its activity-log write; both SQL effects are journaled in memory."
     },
     {
@@ -2937,7 +2937,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "osc-transactional-crud-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:7431",
+      "handler_source": "api/blueprints/osc_cases.py:7426",
       "rationale": "PUT updates allowlisted quotation-template fields with one bounded UPDATE journaled in memory."
     },
     {
@@ -2948,7 +2948,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "osc-transactional-crud-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:7431",
+      "handler_source": "api/blueprints/osc_cases.py:7426",
       "rationale": "DELETE removes one quotation-template row with one bounded DELETE journaled in memory."
     },
     {
@@ -2959,7 +2959,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "osc-transactional-crud-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:8274",
+      "handler_source": "api/blueprints/osc_cases.py:8269",
       "rationale": "PUT updates allowlisted todo fields and completion state with one bounded UPDATE journaled in memory."
     },
     {
@@ -2970,7 +2970,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "osc-transactional-crud-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:8274",
+      "handler_source": "api/blueprints/osc_cases.py:8269",
       "rationale": "DELETE removes one todo row with one bounded DELETE journaled in memory."
     },
     {
@@ -2981,7 +2981,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "osc-transactional-crud-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:4858",
+      "handler_source": "api/blueprints/osc_cases.py:4851",
       "rationale": "PUT updates one user setting and emits its activity-log write; both SQL effects are journaled in memory."
     },
     {
@@ -2992,7 +2992,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "osc-transactional-crud-batch",
-      "v2_handler_source": "api/blueprints/osc_cases.py:4858",
+      "handler_source": "api/blueprints/osc_cases.py:4851",
       "rationale": "DELETE removes one user setting and emits its activity-log write; both SQL effects are journaled in memory."
     },
     {
@@ -3003,7 +3003,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "osc-secondary-write-batch",
-      "v2_handler_source": "api/blueprints/osc_settings.py:62",
+      "handler_source": "api/blueprints/osc_settings.py:62",
       "rationale": "PUT success dispatch journals the settings UPDATE and activity INSERT in disposable SQLite."
     },
     {
@@ -3014,7 +3014,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "osc-secondary-write-batch",
-      "v2_handler_source": "api/blueprints/osc_settings.py:62",
+      "handler_source": "api/blueprints/osc_settings.py:62",
       "rationale": "DELETE success dispatch journals the settings DELETE and activity INSERT in disposable SQLite."
     },
     {
@@ -3025,7 +3025,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "osc-secondary-write-batch",
-      "v2_handler_source": "api/blueprints/osc_settings.py:131",
+      "handler_source": "api/blueprints/osc_settings.py:131",
       "rationale": "PUT success dispatch journals the courts UPDATE and activity INSERT in disposable SQLite."
     },
     {
@@ -3036,7 +3036,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "osc-secondary-write-batch",
-      "v2_handler_source": "api/blueprints/osc_settings.py:131",
+      "handler_source": "api/blueprints/osc_settings.py:131",
       "rationale": "DELETE success dispatch journals the courts DELETE and activity INSERT in disposable SQLite."
     },
     {
@@ -3047,7 +3047,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "osc-secondary-write-batch",
-      "v2_handler_source": "api/blueprints/osc_settings.py:196",
+      "handler_source": "api/blueprints/osc_settings.py:196",
       "rationale": "PUT success dispatch journals the legal-aid branch UPDATE and activity INSERT in disposable SQLite."
     },
     {
@@ -3058,7 +3058,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "osc-secondary-write-batch",
-      "v2_handler_source": "api/blueprints/osc_settings.py:196",
+      "handler_source": "api/blueprints/osc_settings.py:196",
       "rationale": "DELETE success dispatch journals the legal-aid branch DELETE and activity INSERT in disposable SQLite."
     },
     {
@@ -3069,7 +3069,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "osc-secondary-write-batch",
-      "v2_handler_source": "api/blueprints/osc_accounting.py:93",
+      "handler_source": "api/blueprints/osc_accounting.py:93",
       "rationale": "POST success dispatch journals one bounded case_transactions INSERT in disposable SQLite."
     },
     {
@@ -3080,7 +3080,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "osc-secondary-write-batch",
-      "v2_handler_source": "api/blueprints/osc_accounting.py:240",
+      "handler_source": "api/blueprints/osc_accounting.py:240",
       "rationale": "PUT success dispatch journals one bounded case_transactions UPDATE in disposable SQLite."
     },
     {
@@ -3091,7 +3091,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "osc-secondary-write-batch",
-      "v2_handler_source": "api/blueprints/osc_accounting.py:240",
+      "handler_source": "api/blueprints/osc_accounting.py:240",
       "rationale": "DELETE success dispatch journals one bounded case_transactions DELETE in disposable SQLite."
     },
     {
@@ -3102,7 +3102,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "osc-secondary-write-batch",
-      "v2_handler_source": "api/blueprints/osc_accounting.py:476",
+      "handler_source": "api/blueprints/osc_accounting.py:476",
       "rationale": "POST success dispatch journals one bounded recurring_expenses INSERT in disposable SQLite."
     },
     {
@@ -3113,7 +3113,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "osc-secondary-write-batch",
-      "v2_handler_source": "api/blueprints/osc_accounting.py:535",
+      "handler_source": "api/blueprints/osc_accounting.py:535",
       "rationale": "PUT success dispatch journals one bounded recurring_expenses UPDATE in disposable SQLite."
     },
     {
@@ -3124,7 +3124,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "osc-secondary-write-batch",
-      "v2_handler_source": "api/blueprints/osc_accounting.py:535",
+      "handler_source": "api/blueprints/osc_accounting.py:535",
       "rationale": "DELETE success dispatch journals one bounded recurring_expenses DELETE in disposable SQLite."
     },
     {
@@ -3135,7 +3135,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "osc-secondary-write-batch",
-      "v2_handler_source": "api/blueprints/osc_accounting.py:574",
+      "handler_source": "api/blueprints/osc_accounting.py:574",
       "rationale": "POST success dispatch binds SELECT-UPDATE-SELECT synchronization entirely to disposable SQLite."
     },
     {
@@ -3146,7 +3146,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-secondary-write-batch",
-      "v2_handler_source": "api/blueprints/osc_accounting.py:302",
+      "handler_source": "api/blueprints/osc_accounting.py:302",
       "rationale": "POST runs the actual dry-run branch with its sheet importer bound in memory and commit false."
     },
     {
@@ -3157,7 +3157,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-secondary-write-batch",
-      "v2_handler_source": "api/blueprints/osc_accounting.py:338",
+      "handler_source": "api/blueprints/osc_accounting.py:338",
       "rationale": "POST runs the actual non-commit bonus branch with calculation bound in memory and no file export."
     },
     {
@@ -3168,7 +3168,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "osc-secondary-write-batch",
-      "v2_handler_source": "api/blueprints/osc_debt.py:602",
+      "handler_source": "api/blueprints/osc_debt.py:602",
       "rationale": "POST success persists one address CSV under a sandbox root with exact before/after hashes."
     },
     {
@@ -3179,7 +3179,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "osc-secondary-write-batch",
-      "v2_handler_source": "api/blueprints/osc_debt.py:633",
+      "handler_source": "api/blueprints/osc_debt.py:633",
       "rationale": "POST success runs the actual save path with document generation and exports confined to a sandbox root."
     },
     {
@@ -3190,7 +3190,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "osc-secondary-write-batch",
-      "v2_handler_source": "api/blueprints/osc_debt.py:703",
+      "handler_source": "api/blueprints/osc_debt.py:703",
       "rationale": "POST success journals two checklist upserts in disposable SQLite and verifies the synced response."
     },
     {
@@ -3201,7 +3201,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "osc-secondary-write-batch",
-      "v2_handler_source": "api/blueprints/osc_debt.py:724",
+      "handler_source": "api/blueprints/osc_debt.py:724",
       "rationale": "POST success runs one actual batch save with generator and exports confined to a sandbox root."
     },
     {
@@ -3212,7 +3212,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-secondary-write-batch",
-      "v2_handler_source": "api/blueprints/osc_debt.py:797",
+      "handler_source": "api/blueprints/osc_debt.py:797",
       "rationale": "POST success consumes a sandbox DOCX fixture with the parser bound in memory and proves no file mutation."
     },
     {
@@ -3223,7 +3223,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-secondary-write-batch",
-      "v2_handler_source": "api/blueprints/osc_debt.py:892",
+      "handler_source": "api/blueprints/osc_debt.py:892",
       "rationale": "POST validates a complete application payload through the real pure validator with no I/O."
     },
     {
@@ -3234,7 +3234,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "osc-secondary-write-batch",
-      "v2_handler_source": "api/blueprints/osc_debt.py:936",
+      "handler_source": "api/blueprints/osc_debt.py:936",
       "rationale": "POST exercises multipart upload and merge output under one sandbox root with an exact file transcript."
     },
     {
@@ -3245,7 +3245,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "osc-secondary-write-batch",
-      "v2_handler_source": "api/blueprints/osc_gcal.py:213",
+      "handler_source": "api/blueprints/osc_gcal.py:213",
       "rationale": "POST executes the OAuth state/session branch with an in-memory Flow and no provider connection."
     },
     {
@@ -3256,7 +3256,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "osc-secondary-write-batch",
-      "v2_handler_source": "api/blueprints/osc_gcal.py:318",
+      "handler_source": "api/blueprints/osc_gcal.py:318",
       "rationale": "POST deletes only a pre-created sandbox token and binds the exact removed-file hash."
     },
     {
@@ -3267,7 +3267,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "osc-secondary-write-batch",
-      "v2_handler_source": "api/blueprints/osc_gcal.py:335",
+      "handler_source": "api/blueprints/osc_gcal.py:335",
       "rationale": "POST executes the real apply-false dry-run branch with credentials and sync engine bound in memory."
     },
     {
@@ -3278,7 +3278,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "hearing-conflict-v3-parity",
-      "v2_handler_source": "api/blueprints/osc_cases.py:7529",
+      "handler_source": "api/blueprints/osc_cases.py:7524",
       "rationale": "GET reads bounded case schedules, normalizes them once, and returns at most 250 conflict decisions without producing documents or notifications."
     },
     {
@@ -3289,7 +3289,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "hearing-conflict-v3-parity",
-      "v2_handler_source": "api/blueprints/osc_cases.py:7582",
+      "handler_source": "api/blueprints/osc_cases.py:7577",
       "rationale": "POST validates one proposed confirmed hearing and performs bounded database reads only; tentative and all-day hearings fail closed."
     },
     {
@@ -3300,7 +3300,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "hearing-conflict-v3-parity",
-      "v2_handler_source": "api/blueprints/osc_cases.py:7613",
+      "handler_source": "api/blueprints/osc_cases.py:7608",
       "rationale": "POST creates an editable DOCX under the case pleading folder, registers one idempotent case_documents row, and records an OSC audit event; it never files with a court."
     },
     {
@@ -3311,7 +3311,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "hearing-conflict-v3-parity",
-      "v2_handler_source": "api/blueprints/osc_cases.py:7706",
+      "handler_source": "api/blueprints/osc_cases.py:7701",
       "rationale": "GET resolves an opaque tenant-bound case_documents id and streams only a registered hearing-conflict DOCX without exposing or accepting a raw NAS path."
     }
   ],
@@ -3322,7 +3322,7 @@
       "method": "POST",
       "endpoint": "api_alert",
       "reviewed": false,
-      "v2_handler_source": "api/tools_api.py:3655",
+      "handler_source": "api/tools_api.py:3661",
       "rationale": "Delegates to notification fan-out with externally visible effects."
     },
     {
@@ -3331,7 +3331,7 @@
       "method": "POST",
       "endpoint": "api_add_client",
       "reviewed": false,
-      "v2_handler_source": "api/tools_api.py:3584",
+      "handler_source": "api/tools_api.py:3590",
       "rationale": "Delegated client persistence behavior was not traced in this batch."
     },
     {
@@ -3340,7 +3340,7 @@
       "method": "POST",
       "endpoint": "api_code_autofix",
       "reviewed": false,
-      "v2_handler_source": "api/tools_api.py:3295",
+      "handler_source": "api/tools_api.py:3306",
       "rationale": "Autonomous helper can rewrite a caller-selected codebase and optionally internalize skills."
     },
     {
@@ -3349,7 +3349,7 @@
       "method": "POST",
       "endpoint": "api_code_skill_cycle",
       "reviewed": false,
-      "v2_handler_source": "api/tools_api.py:3322",
+      "handler_source": "api/tools_api.py:3333",
       "rationale": "Automation cycle composes dynamic code repair and skill internalization."
     },
     {
@@ -3358,7 +3358,7 @@
       "method": "POST",
       "endpoint": "api_collab_chat",
       "reviewed": false,
-      "v2_handler_source": "api/tools_api.py:3366",
+      "handler_source": "api/tools_api.py:3373",
       "rationale": "Intent-dependent orchestrator and inference paths have dynamic downstream effects."
     },
     {
@@ -3367,7 +3367,7 @@
       "method": "POST",
       "endpoint": "api_collab_music",
       "reviewed": false,
-      "v2_handler_source": "api/tools_api.py:3351",
+      "handler_source": "api/tools_api.py:3362",
       "rationale": "Generation helper can use remote/local providers and create output artifacts."
     },
     {
@@ -3376,7 +3376,7 @@
       "method": "POST",
       "endpoint": "api_collab_transcribe",
       "reviewed": false,
-      "v2_handler_source": "api/tools_api.py:3457",
+      "handler_source": "api/tools_api.py:3463",
       "rationale": "Transcription helper has provider-dependent behavior and records runtime metrics."
     },
     {
@@ -3385,7 +3385,7 @@
       "method": "POST",
       "endpoint": "api_collab_translate",
       "reviewed": false,
-      "v2_handler_source": "api/tools_api.py:3332",
+      "handler_source": "api/tools_api.py:3343",
       "rationale": "Translation helper selects local or remote provider paths dynamically."
     },
     {
@@ -3394,7 +3394,7 @@
       "method": "POST",
       "endpoint": "api_council_core_approve",
       "reviewed": false,
-      "v2_handler_source": "api/tools_api.py:3504",
+      "handler_source": "api/tools_api.py:3510",
       "rationale": "Resolution helper mutation and enactment behavior was not traced in this batch."
     },
     {
@@ -3403,7 +3403,7 @@
       "method": "POST",
       "endpoint": "api_council_core_reject",
       "reviewed": false,
-      "v2_handler_source": "api/tools_api.py:3520",
+      "handler_source": "api/tools_api.py:3526",
       "rationale": "Resolution helper mutation behavior was not traced in this batch."
     },
     {
@@ -3412,7 +3412,7 @@
       "method": "POST",
       "endpoint": "api_fetch",
       "reviewed": false,
-      "v2_handler_source": "api/tools_api.py:1892",
+      "handler_source": "api/tools_api.py:1907",
       "rationale": "Performs caller-selected external network access and writes tool-event telemetry."
     },
     {
@@ -3421,7 +3421,7 @@
       "method": "POST",
       "endpoint": "api_iron_dome_auto_harden",
       "reviewed": false,
-      "v2_handler_source": "api/tools_api.py:3271",
+      "handler_source": "api/tools_api.py:3282",
       "rationale": "Delegated hardening helper derives and persists policy patterns."
     },
     {
@@ -3430,7 +3430,7 @@
       "method": "POST",
       "endpoint": "api_iron_dome_patterns_add",
       "reviewed": false,
-      "v2_handler_source": "api/tools_api.py:3255",
+      "handler_source": "api/tools_api.py:3266",
       "rationale": "Delegated pattern mutation storage behavior was not traced in this batch."
     },
     {
@@ -3439,7 +3439,7 @@
       "method": "POST",
       "endpoint": "api_laf_smoke_login",
       "reviewed": false,
-      "v2_handler_source": "api/tools_api.py:3683",
+      "handler_source": "api/tools_api.py:3689",
       "rationale": "Runs a browser/login skill with auto-repair and dependency installation enabled."
     },
     {
@@ -3448,7 +3448,7 @@
       "method": "POST",
       "endpoint": "api_legal_skill",
       "reviewed": false,
-      "v2_handler_source": "api/tools_api.py:3623",
+      "handler_source": "api/tools_api.py:3629",
       "rationale": "Executes a caller-selected legacy automation script with dynamic effects."
     },
     {
@@ -3457,7 +3457,7 @@
       "method": "POST",
       "endpoint": "api_book_meeting",
       "reviewed": false,
-      "v2_handler_source": "api/tools_api.py:3607",
+      "handler_source": "api/tools_api.py:3613",
       "rationale": "Delegated meeting persistence and possible calendar integration were not traced in this batch."
     },
     {
@@ -3466,7 +3466,7 @@
       "method": "POST",
       "endpoint": "api_melchior_sync_skills",
       "reviewed": false,
-      "v2_handler_source": "api/tools_api.py:2090",
+      "handler_source": "api/tools_api.py:2103",
       "rationale": "Synchronizes skills to another node and therefore has external and local mutations."
     },
     {
@@ -3475,7 +3475,7 @@
       "method": "POST",
       "endpoint": "external_osc_case_status",
       "reviewed": false,
-      "v2_handler_source": "api/tools_api.py:1631",
+      "handler_source": "api/tools_api.py:1665",
       "rationale": "Runs a generated skill with auto-repair and dependency installation enabled."
     },
     {
@@ -3484,7 +3484,7 @@
       "method": "POST",
       "endpoint": "api_recall",
       "reviewed": false,
-      "v2_handler_source": "api/tools_api.py:3555",
+      "handler_source": "api/tools_api.py:3561",
       "rationale": "Vector-memory helper behavior, including possible access metadata writes, was not traced."
     },
     {
@@ -3493,7 +3493,7 @@
       "method": "POST",
       "endpoint": "api_remember",
       "reviewed": false,
-      "v2_handler_source": "api/tools_api.py:3537",
+      "handler_source": "api/tools_api.py:3543",
       "rationale": "Persists caller content through a delegated vector-memory helper."
     },
     {
@@ -3502,7 +3502,7 @@
       "method": "POST",
       "endpoint": "api_research",
       "reviewed": false,
-      "v2_handler_source": "api/tools_api.py:1851",
+      "handler_source": "api/tools_api.py:1866",
       "rationale": "Performs multi-step external network research and writes tool-event telemetry."
     },
     {
@@ -3511,7 +3511,7 @@
       "method": "POST",
       "endpoint": "api_search",
       "reviewed": false,
-      "v2_handler_source": "api/tools_api.py:1819",
+      "handler_source": "api/tools_api.py:1834",
       "rationale": "Performs external search-provider access and writes tool-event telemetry."
     },
     {
@@ -3520,7 +3520,7 @@
       "method": "POST",
       "endpoint": "api_shortcut_ocr",
       "reviewed": false,
-      "v2_handler_source": "api/tools_api.py:2507",
+      "handler_source": "api/tools_api.py:2518",
       "rationale": "Creates temporary input and invokes provider-dependent OCR behavior."
     },
     {
@@ -3529,7 +3529,7 @@
       "method": "POST",
       "endpoint": "api_shortcut_summarize",
       "reviewed": false,
-      "v2_handler_source": "api/tools_api.py:2626",
+      "handler_source": "api/tools_api.py:2637",
       "rationale": "Invokes provider-dependent summarization after processing caller input."
     },
     {
@@ -3538,7 +3538,7 @@
       "method": "POST",
       "endpoint": "api_shortcut_transcribe",
       "reviewed": false,
-      "v2_handler_source": "api/tools_api.py:2664",
+      "handler_source": "api/tools_api.py:2675",
       "rationale": "Creates temporary audio input and invokes provider-dependent transcription."
     },
     {
@@ -3547,7 +3547,7 @@
       "method": "POST",
       "endpoint": "api_create_skill",
       "reviewed": false,
-      "v2_handler_source": "api/tools_api.py:2709",
+      "handler_source": "api/tools_api.py:2720",
       "rationale": "Generates and persists runnable skill code through a delegated helper."
     },
     {
@@ -3556,7 +3556,7 @@
       "method": "POST",
       "endpoint": "api_acquire_skill",
       "reviewed": false,
-      "v2_handler_source": "api/tools_api.py:2748",
+      "handler_source": "api/tools_api.py:2759",
       "rationale": "May discover, download, install, generate, and activate skills dynamically."
     },
     {
@@ -3565,7 +3565,7 @@
       "method": "POST",
       "endpoint": "api_skill_canary_start",
       "reviewed": false,
-      "v2_handler_source": "api/tools_api.py:3061",
+      "handler_source": "api/tools_api.py:3072",
       "rationale": "Mutates delegated release state and can configure automatic promotion."
     },
     {
@@ -3574,7 +3574,7 @@
       "method": "POST",
       "endpoint": "api_skill_canary_stop",
       "reviewed": false,
-      "v2_handler_source": "api/tools_api.py:3094",
+      "handler_source": "api/tools_api.py:3105",
       "rationale": "Mutates delegated canary release state."
     },
     {
@@ -3583,7 +3583,7 @@
       "method": "POST",
       "endpoint": "api_skill_ci",
       "reviewed": false,
-      "v2_handler_source": "api/tools_api.py:3108",
+      "handler_source": "api/tools_api.py:3119",
       "rationale": "CI helper can execute skill code and optionally attempt repairs."
     },
     {
@@ -3592,7 +3592,7 @@
       "method": "POST",
       "endpoint": "api_discover_skills",
       "reviewed": false,
-      "v2_handler_source": "api/tools_api.py:2724",
+      "handler_source": "api/tools_api.py:2735",
       "rationale": "Discovery helper performs external GitHub/provider operations dynamically."
     },
     {
@@ -3601,7 +3601,7 @@
       "method": "POST",
       "endpoint": "api_import_toolsai_auto_skill",
       "reviewed": false,
-      "v2_handler_source": "api/tools_api.py:3220",
+      "handler_source": "api/tools_api.py:3231",
       "rationale": "Clones or reads a repository, imports knowledge, and can notify Discord."
     },
     {
@@ -3610,7 +3610,7 @@
       "method": "POST",
       "endpoint": "api_install_skill",
       "reviewed": false,
-      "v2_handler_source": "api/tools_api.py:2736",
+      "handler_source": "api/tools_api.py:2747",
       "rationale": "Installs caller-selected skill content from GitHub or a named source."
     },
     {
@@ -3619,7 +3619,7 @@
       "method": "POST",
       "endpoint": "api_skill_internalize",
       "reviewed": false,
-      "v2_handler_source": "api/tools_api.py:3170",
+      "handler_source": "api/tools_api.py:3181",
       "rationale": "Generates and optionally activates runnable skill artifacts from learned knowledge."
     },
     {
@@ -3628,7 +3628,7 @@
       "method": "POST",
       "endpoint": "api_skill_internalize_codebase",
       "reviewed": false,
-      "v2_handler_source": "api/tools_api.py:3192",
+      "handler_source": "api/tools_api.py:3203",
       "rationale": "Scans caller-selected code and generates multiple runnable skills and release state."
     },
     {
@@ -3637,7 +3637,7 @@
       "method": "POST",
       "endpoint": "api_skill_rollback",
       "reviewed": false,
-      "v2_handler_source": "api/tools_api.py:3020",
+      "handler_source": "api/tools_api.py:3031",
       "rationale": "Overwrites current skill files from a selected snapshot."
     },
     {
@@ -3646,7 +3646,7 @@
       "method": "POST",
       "endpoint": "api_run_skill",
       "reviewed": false,
-      "v2_handler_source": "api/tools_api.py:2809",
+      "handler_source": "api/tools_api.py:2820",
       "rationale": "Executes arbitrary installed skill code synchronously or asynchronously with dynamic effects."
     },
     {
@@ -3655,7 +3655,7 @@
       "method": "POST",
       "endpoint": "api_skill_set_stable",
       "reviewed": false,
-      "v2_handler_source": "api/tools_api.py:3046",
+      "handler_source": "api/tools_api.py:3057",
       "rationale": "Mutates delegated stable release state and may enforce the selected version."
     },
     {
@@ -3664,7 +3664,7 @@
       "method": "POST",
       "endpoint": "api_skill_teach",
       "reviewed": false,
-      "v2_handler_source": "api/tools_api.py:3133",
+      "handler_source": "api/tools_api.py:3144",
       "rationale": "Persists caller-supplied lessons through AutoSkill."
     },
     {
@@ -3673,7 +3673,7 @@
       "method": "POST",
       "endpoint": "api_skill_teach_file",
       "reviewed": false,
-      "v2_handler_source": "api/tools_api.py:3153",
+      "handler_source": "api/tools_api.py:3164",
       "rationale": "Reads a caller-selected file and persists learned content through AutoSkill."
     },
     {
@@ -3682,7 +3682,7 @@
       "method": "POST",
       "endpoint": "api_summarize",
       "reviewed": false,
-      "v2_handler_source": "api/tools_api.py:2103",
+      "handler_source": "api/tools_api.py:2114",
       "rationale": "Uses dynamic inference/provider routes and records summarization telemetry."
     },
     {
@@ -3691,7 +3691,7 @@
       "method": "POST",
       "endpoint": "api_vision",
       "reviewed": false,
-      "v2_handler_source": "api/tools_api.py:1927",
+      "handler_source": "api/tools_api.py:1942",
       "rationale": "Invokes local or remote vision inference and records tool-event telemetry."
     }
   ]

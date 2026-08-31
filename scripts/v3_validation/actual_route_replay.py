@@ -5640,6 +5640,7 @@ def _worker_environment(
         "FLASK_SECRET_KEY": "offline-route-replay",
         "DB_PASSWORD": "offline-route-replay",
         "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONPYCACHEPREFIX": "/dev/null",
         "PYTHONNOUSERSITE": "1",
         "PYTHONSAFEPATH": "1",
         "PYTHONPATH": os.pathsep.join(str(root) for root in roots),

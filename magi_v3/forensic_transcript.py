@@ -410,6 +410,7 @@ def _worker_environment(
         "TMPDIR": str(workspace / "tmp"),
         "PYTHONPATH": str(ROOT),
         "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONPYCACHEPREFIX": os.devnull,
         "PYTHONNOUSERSITE": "1",
         "HF_HUB_OFFLINE": "1",
         "TRANSFORMERS_OFFLINE": "1",

@@ -19,8 +19,10 @@ from scripts.v3_release_gate import (
 from scripts.v3_validation.schedule_evidence import (
     ScheduleEvidenceError,
     derive_schedule_gate_metrics,
+    enabled_job_ids_from_cron,
 )
 from scripts.v3_validation.schedule_capacity_certification import (
+    DURABLE_BACKLOG_COALESCING_JOB_IDS,
     _duration_profile_hash_payload,
 )
 from scripts.v3_validation.schedule_sample_evidence import (
@@ -39,6 +41,8 @@ HASHES = {
     "release_id": "release-g11",
     "release_manifest_sha256": "7" * 64,
 }
+JOB_COUNT = 96
+ENABLED_JOB_IDS = tuple(f"job-{index:03d}" for index in range(JOB_COUNT))
 
 
 def _digest(payload: dict[str, object]) -> str:
@@ -54,11 +58,13 @@ def _sign(payload: dict[str, object]) -> None:
 
 def _raw_passes(
     bindings: dict[str, str] | None = None,
+    *,
+    pass_count: int = 1,
 ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     bindings = bindings or HASHES
     reports: list[dict[str, object]] = []
     bodies: list[dict[str, object]] = []
-    for validation_pass in range(1, 8):
+    for validation_pass in range(1, pass_count + 1):
         entries = [
             {
                 "job_id": f"job-{index:03d}",
@@ -69,10 +75,10 @@ def _raw_passes(
                     f"command-{index:03d}".encode()
                 ).hexdigest(),
             }
-            for index in range(93)
+            for index in range(JOB_COUNT)
         ]
         results = []
-        for index in range(93):
+        for index in range(JOB_COUNT):
             job_id = f"job-{index:03d}"
             entrypoint_sha256 = hashlib.sha256(
                 f"entrypoint-{index:03d}".encode()
@@ -175,10 +181,10 @@ def _raw_passes(
                 "inherited_baseline_sha256": bindings["duration_baseline_sha256"],
             },
             "measurements": {
-                "enabled_jobs": 93,
-                "safe_adapter_coverage_jobs": 93,
+                "enabled_jobs": JOB_COUNT,
+                "safe_adapter_coverage_jobs": JOB_COUNT,
                 "blocked_jobs": 0,
-                "body_jobs_passed": 93,
+                "body_jobs_passed": JOB_COUNT,
                 "all_safe_bodies_passed": True,
             },
             "registry_entries": entries,
@@ -228,11 +234,11 @@ def _raw_passes(
                 }
             )
         duration_evidence = {
-            "enabled_jobs": 93,
-            "profiles": 93,
-            "p95_jobs": 93,
-            "historical_production_p95_jobs": 92,
-            "compressed_active_p95_jobs": 93,
+            "enabled_jobs": JOB_COUNT,
+            "profiles": JOB_COUNT,
+            "p95_jobs": JOB_COUNT,
+            "historical_production_p95_jobs": JOB_COUNT,
+            "compressed_active_p95_jobs": JOB_COUNT,
             "sparse_fallback_jobs": 0,
             "missing_jobs": 0,
             "minimum_successful_samples": 3,
@@ -260,10 +266,9 @@ def _raw_passes(
             "all_distinct_occurrences_accounted": True,
             "same_job_concurrency_violations": 0,
             "coalesced_distinct_occurrences": 0,
-            "durable_backlog_coalescing_job_ids": [
-                "job_drive_case_sync_all_files",
-                "job_legacy_judgment_resummary_quality"
-            ],
+            "durable_backlog_coalescing_job_ids": sorted(
+                DURABLE_BACKLOG_COALESCING_JOB_IDS
+            ),
             "durable_backlog_coalesced_occurrences": 0,
             "durable_backlog_coalesced_occurrences_by_job": {},
             "loss_sensitive_coalesced_occurrences": 0,
@@ -300,8 +305,8 @@ def _raw_passes(
                     "status": "passed",
                     "duration_evidence": duration_evidence,
                     "body_evidence": {
-                        "enabled_jobs": 93,
-                        "jobs_with_three_successful_real_body_samples": 93,
+                        "enabled_jobs": JOB_COUNT,
+                        "jobs_with_three_successful_real_body_samples": JOB_COUNT,
                         "jobs_missing_real_body_adapter": 0,
                         "body_adapter_coverage_complete": True,
                         "registry_evidence_sha256": body_hash,
@@ -335,13 +340,15 @@ def _raw_passes(
     return reports, bodies
 
 
-def test_seven_raw_passes_recompute_the_g11_metrics() -> None:
+def test_one_bound_raw_pass_recomputes_the_seven_day_g11_metrics() -> None:
     reports, bodies = _raw_passes()
 
-    metrics = derive_schedule_gate_metrics(reports, bodies, **HASHES)
+    metrics = derive_schedule_gate_metrics(
+        reports, bodies, enabled_job_ids=ENABLED_JOB_IDS, **HASHES
+    )
 
     assert metrics == {
-        "independent_passes": 7,
+        "independent_passes": 1,
         "arrival_multiplier": 10,
         "duration_multiplier": 2.0,
         "p0_p1_deadline_misses": 0,
@@ -352,20 +359,26 @@ def test_seven_raw_passes_recompute_the_g11_metrics() -> None:
 
 
 def test_duplicate_or_missing_profiles_and_bodies_fail_closed() -> None:
-    reports, bodies = _raw_passes()
+    reports, bodies = _raw_passes(pass_count=2)
     reports[1]["validation_profile_id"] = reports[0]["validation_profile_id"]
     _sign(reports[1])
     with pytest.raises(ScheduleEvidenceError, match="profile is missing or duplicated"):
-        derive_schedule_gate_metrics(reports, bodies, **HASHES)
+        derive_schedule_gate_metrics(
+            reports, bodies, enabled_job_ids=ENABLED_JOB_IDS, **HASHES
+        )
 
     reports, bodies = _raw_passes()
-    with pytest.raises(ScheduleEvidenceError, match="requires seven raw"):
-        derive_schedule_gate_metrics(reports, bodies[:-1], **HASHES)
+    with pytest.raises(ScheduleEvidenceError, match="matching non-empty raw"):
+        derive_schedule_gate_metrics(
+            reports, bodies[:-1], enabled_job_ids=ENABLED_JOB_IDS, **HASHES
+        )
 
-    reports, bodies = _raw_passes()
+    reports, bodies = _raw_passes(pass_count=2)
     bodies[1] = copy.deepcopy(bodies[0])
     with pytest.raises(ScheduleEvidenceError, match="body evidence hash is invalid or duplicated"):
-        derive_schedule_gate_metrics(reports, bodies, **HASHES)
+        derive_schedule_gate_metrics(
+            reports, bodies, enabled_job_ids=ENABLED_JOB_IDS, **HASHES
+        )
 
 
 def test_cron_or_release_source_drift_fails_closed() -> None:
@@ -373,14 +386,46 @@ def test_cron_or_release_source_drift_fails_closed() -> None:
     drifted = {**HASHES, "cron_jobs_sha256": "f" * 64}
 
     with pytest.raises(ScheduleEvidenceError, match="source binding drifted"):
-        derive_schedule_gate_metrics(reports, bodies, **drifted)
+        derive_schedule_gate_metrics(
+            reports, bodies, enabled_job_ids=ENABLED_JOB_IDS, **drifted
+        )
+
+
+def test_enabled_job_set_is_derived_from_cron_and_must_match_raw_evidence() -> None:
+    cron = [
+        {"id": job_id, "enabled": True}
+        for job_id in reversed(ENABLED_JOB_IDS)
+    ] + [{"id": "disabled-job", "enabled": False}]
+    assert enabled_job_ids_from_cron(cron) == ENABLED_JOB_IDS
+
+    reports, bodies = _raw_passes()
+    with pytest.raises(ScheduleEvidenceError, match="real body coverage is incomplete"):
+        derive_schedule_gate_metrics(
+            reports,
+            bodies,
+            enabled_job_ids=(*ENABLED_JOB_IDS[:-1], "unexpected-enabled-job"),
+            **HASHES,
+        )
+
+
+@pytest.mark.parametrize(
+    "cron",
+    [
+        [],
+        [{"id": "job-a", "enabled": "true"}],
+        [{"id": "job-a", "enabled": True}, {"id": "job-a", "enabled": False}],
+    ],
+)
+def test_invalid_cron_snapshot_fails_closed(cron: object) -> None:
+    with pytest.raises(ScheduleEvidenceError, match="G11 cron"):
+        enabled_job_ids_from_cron(cron)
 
 
 def test_fake_aggregate_cannot_hide_incomplete_body_evidence() -> None:
     reports, bodies = _raw_passes()
-    fake_aggregate = {"all_enabled_job_bodies_covered": True, "independent_passes": 7}
+    fake_aggregate = {"all_enabled_job_bodies_covered": True, "independent_passes": 1}
     assert fake_aggregate["all_enabled_job_bodies_covered"] is True
-    bodies[0]["measurements"]["safe_adapter_coverage_jobs"] = 91  # type: ignore[index]
+    bodies[0]["measurements"]["safe_adapter_coverage_jobs"] = JOB_COUNT - 1  # type: ignore[index]
     _sign(bodies[0])
     body_hash = bodies[0]["evidence_sha256"]
     reports[0]["release_binding"]["real_job_body_evidence_sha256"] = body_hash  # type: ignore[index]
@@ -390,7 +435,9 @@ def test_fake_aggregate_cannot_hide_incomplete_body_evidence() -> None:
     _sign(reports[0])
 
     with pytest.raises(ScheduleEvidenceError, match="real body coverage is incomplete"):
-        derive_schedule_gate_metrics(reports, bodies, **HASHES)
+        derive_schedule_gate_metrics(
+            reports, bodies, enabled_job_ids=ENABLED_JOB_IDS, **HASHES
+        )
 
 
 def test_g11_rejects_compressed_active_body_hash_or_raw_sample_drift() -> None:
@@ -407,7 +454,9 @@ def test_g11_rejects_compressed_active_body_hash_or_raw_sample_drift() -> None:
     _sign(report)
 
     with pytest.raises(ScheduleEvidenceError, match="duration body hash drifted"):
-        derive_schedule_gate_metrics(reports, bodies, **HASHES)
+        derive_schedule_gate_metrics(
+            reports, bodies, enabled_job_ids=ENABLED_JOB_IDS, **HASHES
+        )
 
     duration = report["layers"]["business_body_plane"]["duration_evidence"]  # type: ignore[index]
     duration["active_body_evidence_sha256"] = body_hash
@@ -419,7 +468,9 @@ def test_g11_rejects_compressed_active_body_hash_or_raw_sample_drift() -> None:
     ]
     _sign(report)
     with pytest.raises(ScheduleEvidenceError, match="raw binding drifted"):
-        derive_schedule_gate_metrics(reports, bodies, **HASHES)
+        derive_schedule_gate_metrics(
+            reports, bodies, enabled_job_ids=ENABLED_JOB_IDS, **HASHES
+        )
 
 
 @pytest.mark.parametrize("tamper", ["contract_evidence", "database_postcondition"])
@@ -470,7 +521,9 @@ def test_g11_recomputes_each_sample_semantic_ledger(tamper: str) -> None:
     with pytest.raises(
         ScheduleEvidenceError, match="compressed active duration binding failed"
     ):
-        derive_schedule_gate_metrics(reports, bodies, **HASHES)
+        derive_schedule_gate_metrics(
+            reports, bodies, enabled_job_ids=ENABLED_JOB_IDS, **HASHES
+        )
 
 
 def test_release_gate_rejects_g11_source_role_drift_before_trusting_metrics() -> None:
@@ -574,7 +627,10 @@ def test_compiler_emits_g11_and_release_gate_recomputes_raw_reports(
     context = CompileContext("campaign-g11", release_sha, "test-mac", "a" * 64)
     state = tmp_path / "campaign"
     cron_path = state / "cron-jobs.json"
-    cron_sha = _write_json(cron_path, [])
+    cron_sha = _write_json(
+        cron_path,
+        [{"id": job_id, "enabled": True} for job_id in ENABLED_JOB_IDS],
+    )
     bindings = {
         "cron_jobs_sha256": cron_sha,
         "dispatch_policy_sha256": source_rows[1]["sha256"],
@@ -610,7 +666,7 @@ def test_compiler_emits_g11_and_release_gate_recomputes_raw_reports(
             "replay_start_local": "2026-07-13T00:00:00+08:00",
             "fault_seed": index,
         }
-        for index in range(1, 8)
+        for index in range(1, len(reports) + 1)
     ]
     outcomes: list[dict[str, object]] = []
     for index, (profile, capacity, body) in enumerate(
@@ -664,7 +720,8 @@ def test_compiler_emits_g11_and_release_gate_recomputes_raw_reports(
         **shared,
         "status": "offline_passed",
         "release_gate_eligible": True,
-        "completed_independent_passes": 7,
+        "required_independent_passes": 1,
+        "completed_independent_passes": 1,
         "started_at": now,
         "completed_at": now,
         "generated_at": now,
@@ -685,7 +742,7 @@ def test_compiler_emits_g11_and_release_gate_recomputes_raw_reports(
         "decision": "GO",
         "execution_backend": "release_launcher",
         "fail_closed": False,
-        "required_independent_passes": 7,
+        "required_independent_passes": 1,
         "live_execution_performed": False,
         "cutover_execution_performed": False,
         "cron_jobs_file": str(cron_path),
@@ -719,5 +776,5 @@ def test_compiler_emits_g11_and_release_gate_recomputes_raw_reports(
 
     evidence_id = "seven_day_schedule_10x_arrival_2x_duration_replay_passed"
     assert statuses[evidence_id] == "passed"
-    assert evidence_id in decision["passed"]
+    assert evidence_id in decision["passed"], decision.get("invalid")
     assert evidence_id not in decision["invalid"]

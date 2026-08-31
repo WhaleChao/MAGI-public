@@ -5230,6 +5230,7 @@ class _IsolatedAutopilotProvider:
             "LC_ALL": "C.UTF-8",
             "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
             "PYTHONDONTWRITEBYTECODE": "1",
+            "PYTHONPYCACHEPREFIX": "/dev/null",
             "TMPDIR": str(self.workspace),
         }
         process = subprocess.Popen(

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import plistlib
 import re
@@ -40,8 +41,10 @@ from scripts.v3_cutover.probe import (  # noqa: E402
 from scripts.v3_pdf_namer_handoff import HandoffError, verify_manifest  # noqa: E402
 from scripts.v3_static_external_staging import (  # noqa: E402
     RECEIPT_NAME as STATIC_EXTERNAL_RECEIPT_NAME,
+    RELEASE_BINDING_RECEIPT_NAME as STATIC_EXTERNAL_RELEASE_RECEIPT_NAME,
     StaticExternalStagingError,
     verify_static_external,
+    verify_static_external_release_binding,
 )
 from magi_v3.mutable_state_handoff import (  # noqa: E402
     ExactContext,
@@ -690,7 +693,96 @@ class PreCutoverPreflight:
             self._check(name, False, str(exc))
             return None
 
-    def _check_paths_and_disk(self, minimum_free_gb: float) -> None:
+    @staticmethod
+    def _tree_material_bytes(root: Path) -> int:
+        canonical = root.resolve(strict=True)
+        if canonical != root or root.is_symlink() or not canonical.is_dir():
+            raise PreCutoverError("release-bound disk material root is unsafe")
+        total = 0
+        identities: set[tuple[int, int]] = set()
+        for directory, directory_names, file_names in os.walk(
+            canonical,
+            topdown=True,
+            followlinks=False,
+        ):
+            base = Path(directory)
+            for name in tuple(directory_names):
+                child = base / name
+                if child.is_symlink():
+                    raise PreCutoverError("release-bound disk material contains a symlink")
+            for name in file_names:
+                child = base / name
+                metadata = child.lstat()
+                if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+                    raise PreCutoverError(
+                        "release-bound disk material contains an unsafe member"
+                    )
+                identity = (metadata.st_dev, metadata.st_ino)
+                if identity not in identities:
+                    identities.add(identity)
+                    total += metadata.st_size
+        return total
+
+    def _disk_capacity_requirement(self, policy: Any) -> dict[str, Any]:
+        expected_fields = {
+            "schema_version",
+            "absolute_floor_gib",
+            "operational_headroom_gib",
+            "material_multiplier",
+            "material_scope",
+        }
+        if type(policy) is not dict or set(policy) != expected_fields:
+            raise PreCutoverError("release-bound disk capacity policy is invalid")
+        values = {
+            key: policy.get(key)
+            for key in (
+                "absolute_floor_gib",
+                "operational_headroom_gib",
+                "material_multiplier",
+            )
+        }
+        if (
+            policy.get("schema_version") != 1
+            or policy.get("material_scope")
+            != ["candidate_release", "prepared_deployment"]
+            or any(
+                not isinstance(value, (int, float))
+                or isinstance(value, bool)
+                or not math.isfinite(float(value))
+                or float(value) <= 0
+                for value in values.values()
+            )
+            or float(values["absolute_floor_gib"]) < 16
+            or float(values["operational_headroom_gib"]) < 8
+            or float(values["material_multiplier"]) < 4
+        ):
+            raise PreCutoverError("release-bound disk capacity policy is unsafe")
+        material_roots = (
+            self.release_dir,
+            self.deploy_prepared_marker_path.parent,
+        )
+        material_bytes = sum(self._tree_material_bytes(root) for root in material_roots)
+        gib = 1024**3
+        absolute_floor_bytes = math.ceil(float(values["absolute_floor_gib"]) * gib)
+        calculated_bytes = math.ceil(
+            float(values["operational_headroom_gib"]) * gib
+            + float(values["material_multiplier"]) * material_bytes
+        )
+        required_bytes = max(absolute_floor_bytes, calculated_bytes)
+        return {
+            "schema_version": 1,
+            "policy": "release_bound_capacity",
+            "absolute_floor_gib": float(values["absolute_floor_gib"]),
+            "operational_headroom_gib": float(values["operational_headroom_gib"]),
+            "material_multiplier": float(values["material_multiplier"]),
+            "material_scope": list(policy["material_scope"]),
+            "material_bytes": material_bytes,
+            "calculated_required_bytes": calculated_bytes,
+            "required_bytes": required_bytes,
+            "required_gib": required_bytes / gib,
+        }
+
+    def _check_paths_and_disk(self, capacity: Mapping[str, Any] | None) -> None:
         groups = {
             "database_paths": self.required_paths.databases,
             "state_paths": self.required_paths.state,
@@ -722,6 +814,14 @@ class PreCutoverPreflight:
         )
         low: dict[str, float] = {}
         errors: list[str] = []
+        if capacity is None:
+            self._check(
+                "disk_free",
+                False,
+                {"policy": "invalid", "low": {}, "errors": ["capacity policy invalid"]},
+            )
+            return
+        minimum_free_gb = float(capacity["required_gib"])
         for path in disk_targets:
             try:
                 free_gb = self.disk_usage(path).free / 1024**3
@@ -732,7 +832,12 @@ class PreCutoverPreflight:
         self._check(
             "disk_free",
             bool(disk_targets) and not low and not errors,
-            {"minimum_gb": minimum_free_gb, "low": low, "errors": errors},
+            {
+                **dict(capacity),
+                "minimum_gb": minimum_free_gb,
+                "low": low,
+                "errors": errors,
+            },
         )
 
     def _check_backup(self, now: datetime) -> None:
@@ -1306,10 +1411,23 @@ class PreCutoverPreflight:
         if payload.get("deployment_mode") == "production":
             runtime_root = Path(str(payload.get("runtime_root") or ""))
             static_target = runtime_root / "shared" / "external"
+            legacy_static_receipt = static_target / STATIC_EXTERNAL_RECEIPT_NAME
+            release_receipt_relative = (
+                Path("runtime-inputs") / STATIC_EXTERNAL_RELEASE_RECEIPT_NAME
+            )
+            release_static_receipt = deployment_root / release_receipt_relative
+            raw_static_receipt = external.get("static_external_receipt")
+            legacy_static_binding = raw_static_receipt == str(legacy_static_receipt)
             static_receipt = bound_file(
                 "static_external_receipt",
-                static_target / STATIC_EXTERNAL_RECEIPT_NAME,
+                legacy_static_receipt
+                if legacy_static_binding
+                else release_static_receipt,
             )
+            if not legacy_static_binding and release_receipt_relative.as_posix() not in artifact_paths:
+                errors.append(
+                    "prepared V3 static external release receipt is not hash-bound"
+                )
             for key in (
                 "static_external_receipt",
                 "static_external_receipt_sha256",
@@ -1320,16 +1438,38 @@ class PreCutoverPreflight:
                     errors.append(f"prepared V3 {key} top-level binding mismatch")
             if static_receipt is not None:
                 try:
-                    static_report = verify_static_external(
-                        self.release_dir / "release-manifest.json",
-                        expected_release_manifest_sha256=str(
-                            payload.get("release_manifest_sha256") or ""
-                        ),
-                        target_root=static_target,
-                    )
+                    if legacy_static_binding:
+                        # Backward compatibility for already-installed r59-style
+                        # deployments. New deployments always use the local
+                        # release-binding receipt path above.
+                        static_report = verify_static_external(
+                            self.release_dir / "release-manifest.json",
+                            expected_release_manifest_sha256=str(
+                                payload.get("release_manifest_sha256") or ""
+                            ),
+                            target_root=static_target,
+                        )
+                        verified_receipt_sha = static_report["receipt_sha256"]
+                    else:
+                        static_report = verify_static_external_release_binding(
+                            self.release_dir / "release-manifest.json",
+                            expected_release_manifest_sha256=str(
+                                payload.get("release_manifest_sha256") or ""
+                            ),
+                            binding_receipt=static_receipt,
+                            expected_binding_receipt_sha256=str(
+                                external.get("static_external_receipt_sha256") or ""
+                            ),
+                            target_root=static_target,
+                            expected_target_snapshot_sha256=str(
+                                external.get("static_external_target_snapshot_sha256") or ""
+                            ),
+                        )
+                        verified_receipt_sha = static_report[
+                            "binding_receipt_sha256"
+                        ]
                     if (
-                        static_report["receipt_sha256"]
-                        != external.get("static_external_receipt_sha256")
+                        verified_receipt_sha != external.get("static_external_receipt_sha256")
                         or static_report["source_snapshot_sha256"]
                         != external.get("static_external_source_snapshot_sha256")
                         or static_report["target_snapshot_sha256"]
@@ -1491,13 +1631,24 @@ class PreCutoverPreflight:
             errors.append(str(exc))
 
     def _check_campaign_and_gate(self, now: datetime) -> None:
+        try:
+            gate_config = _load_json(self.gate_config_path)
+        except Exception:
+            gate_config = {}
+        legacy_v2 = (
+            gate_config.get("source_contract", {}).get("legacy_v2_validation")
+            != "disabled"
+        )
+        expected_production_release = "v2" if legacy_v2 else "v3"
         campaign_config = self._document("campaign_config", self.campaign_config_path)
         if campaign_config is not None:
             errors = []
             if campaign_config.get("armed") is not True:
                 errors.append("campaign is not armed")
-            if campaign_config.get("production_release") != "v2":
-                errors.append("production release is not v2")
+            if campaign_config.get("production_release") != expected_production_release:
+                errors.append(
+                    "campaign production release does not match the gate source contract"
+                )
             self._check("campaign_configuration", not errors, errors)
         campaign = self._document("campaign_report", self.campaign_report_path)
         if campaign is not None:
@@ -1519,25 +1670,33 @@ class PreCutoverPreflight:
         if gate is not None:
             errors = []
             try:
-                required_evidence = _load_json(self.gate_config_path)["required_evidence"]
-                if not isinstance(required_evidence, list) or len(required_evidence) != 28:
-                    raise ValueError("gate config does not declare exactly 28 evidence IDs")
+                required_evidence = gate_config["required_evidence"]
+                if (
+                    not isinstance(required_evidence, list)
+                    or not required_evidence
+                    or any(not isinstance(item, str) or not item for item in required_evidence)
+                    or len(required_evidence) != len(set(required_evidence))
+                ):
+                    raise ValueError(
+                        "gate config required evidence IDs are missing, invalid, or duplicated"
+                    )
             except Exception as exc:
                 required_evidence = []
                 errors.append(str(exc))
+            required_count = len(required_evidence)
+            drill_passed = [
+                item
+                for item in required_evidence
+                if item not in ATOMIC_DRILL_EXCLUDED_EVIDENCE
+            ]
             expected = gate.get("expected_context")
             if not isinstance(expected, dict) or any(expected.get(k) != v for k, v in self.context.to_dict().items()):
                 errors.append("release gate context mismatch")
             if self.execution_purpose == "atomic_drill":
                 exact_gate = (
                     gate.get("decision") == "NO_GO"
-                    and gate.get("required_count") == 28
-                    and gate.get("passed")
-                    == [
-                        item
-                        for item in required_evidence
-                        if item not in ATOMIC_DRILL_EXCLUDED_EVIDENCE
-                    ]
+                    and gate.get("required_count") == required_count
+                    and gate.get("passed") == drill_passed
                     and gate.get("missing") == list(ATOMIC_DRILL_EXCLUDED_EVIDENCE)
                     and gate.get("failed") == []
                     and gate.get("invalid") == {}
@@ -1545,7 +1704,7 @@ class PreCutoverPreflight:
             else:
                 exact_gate = (
                     gate.get("decision") == "GO"
-                    and gate.get("required_count") == 28
+                    and gate.get("required_count") == required_count
                     and gate.get("passed") == required_evidence
                     and gate.get("missing") == []
                     and gate.get("failed") == []
@@ -1572,7 +1731,7 @@ class PreCutoverPreflight:
         """Revalidate a redeemed daytime authorization immediately before GO.
 
         This is intentionally a second, independent check of the normalized
-        G28 envelope.  A pre-cutover report is not allowed to turn a prior GO
+        human-approval envelope. A pre-cutover report cannot turn a prior GO
         decision into an evergreen permission to stop V2 later.
         """
         binding = gate.get("conditional_authorization")
@@ -1690,7 +1849,9 @@ class PreCutoverPreflight:
         except Exception as exc:
             self._check("cutover_window", False, str(exc))
 
-    def _check_ownership(self) -> None:
+    def _check_ownership(self, *, legacy_v2: bool) -> None:
+        expected_release = "v2" if legacy_v2 else "v3"
+        check_name = "v2_only_ownership" if legacy_v2 else "previous_v3_only_ownership"
         try:
             if self.snapshot_collector:
                 snapshot = self.snapshot_collector()
@@ -1698,14 +1859,14 @@ class PreCutoverPreflight:
                 v2_spec = discover_release_spec("v2", self.v2_root, self.v2_namespace)
                 v3_spec = self._prepared_v3_release_spec()
                 snapshot = collect_snapshot((v2_spec, v3_spec), ports=DEFAULT_PORTS)
-            assessment = assess_snapshot(snapshot, expected="v2")
+            assessment = assess_snapshot(snapshot, expected=expected_release)
             self._check(
-                "v2_only_ownership",
+                check_name,
                 assessment.go,
                 {"assessment": assessment.to_dict(), "snapshot": snapshot.to_dict()},
             )
         except Exception as exc:
-            self._check("v2_only_ownership", False, str(exc))
+            self._check(check_name, False, str(exc))
 
     def _prepared_v3_release_spec(self) -> ReleaseSpec:
         """Bind ownership probes to the rendered-but-not-installed deployment."""
@@ -1829,17 +1990,30 @@ class PreCutoverPreflight:
         except Exception as exc:
             gates = {}
             self._check("gate_config_binding", False, str(exc))
-        minimum_gb = float(gates.get("promotion_thresholds", {}).get("minimum_disk_free_gb", 80))
-        self._check_paths_and_disk(minimum_gb)
+        legacy_v2 = (
+            gates.get("source_contract", {}).get("legacy_v2_validation")
+            != "disabled"
+        )
+        try:
+            disk_capacity = self._disk_capacity_requirement(
+                gates.get("disk_capacity_policy")
+            )
+        except (OSError, ValueError, PreCutoverError) as exc:
+            disk_capacity = None
+            self._check("disk_capacity_policy", False, str(exc))
+        else:
+            self._check("disk_capacity_policy", True, disk_capacity)
+        self._check_paths_and_disk(disk_capacity)
         self._check_backup(now)
         self._check_release()
         self._check_readiness()
         self._check_deploy_prepared()
-        self._check_pdf_namer_handoff()
-        self._check_mutable_state_handoff()
+        if legacy_v2:
+            self._check_pdf_namer_handoff()
+            self._check_mutable_state_handoff()
         self._check_campaign_and_gate(now)
         self._check_window(now, gates)
-        self._check_ownership()
+        self._check_ownership(legacy_v2=legacy_v2)
         gaps = [check["name"] for check in self.checks if not check["ok"]]
         clean = not gaps
         decision = (
@@ -1847,6 +2021,14 @@ class PreCutoverPreflight:
             if clean and self.execution_purpose == "atomic_drill"
             else "GO" if clean else "NO_GO"
         )
+        required_evidence = gates.get("required_evidence")
+        required_count = len(required_evidence) if isinstance(required_evidence, list) else 0
+        excluded_count = (
+            len(ATOMIC_DRILL_EXCLUDED_EVIDENCE)
+            if self.execution_purpose == "atomic_drill"
+            else 0
+        )
+        passed_count = required_count - excluded_count
         report = {
             "schema_version": 1,
             "observed_at": now.isoformat(),
@@ -1854,14 +2036,12 @@ class PreCutoverPreflight:
             "decision": decision,
             "execution_purpose": self.execution_purpose,
             "gate_stage": (
-                "cutover_drill_26_of_28"
+                f"cutover_drill_{passed_count}_of_{required_count}"
                 if self.execution_purpose == "atomic_drill"
-                else "final_cutover_28_of_28"
+                else f"final_cutover_{required_count}_of_{required_count}"
             ),
-            "required_evidence_count": 28,
-            "passed_evidence_count": (
-                26 if self.execution_purpose == "atomic_drill" else 28
-            ) if clean else 0,
+            "required_evidence_count": required_count,
+            "passed_evidence_count": passed_count if clean else 0,
             "excluded_evidence": (
                 list(ATOMIC_DRILL_EXCLUDED_EVIDENCE)
                 if self.execution_purpose == "atomic_drill"

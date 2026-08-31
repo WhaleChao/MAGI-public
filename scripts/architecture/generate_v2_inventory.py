@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
-"""Generate a source-derived MAGI V2 compatibility inventory for V3 planning.
+"""Generate MAGI's source-derived runtime interface inventory.
 
-The inventory deliberately ignores README files.  It extracts observable
+The module keeps its historical filename for compatibility with archived
+release tooling.  Active V3 validation imports ``generate_runtime_inventory``
+and writes ``runtime_inventory.json``.  The inventory deliberately ignores
+README files and extracts observable
 interfaces from Python route decorators, skill entry points, cron definitions,
 daemon child-process declarations, tests, and checked-in launchd definitions.
 """
@@ -10,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import copy
 import json
 import plistlib
 import re
@@ -22,6 +26,27 @@ HTTP_DECORATORS = {"route", "get", "post", "put", "delete", "patch"}
 CRON_CODE_ROOT_MARKERS = frozenset(
     {"api", "casper_ecosystem", "config", "gui", "scripts", "skills"}
 )
+
+
+def semantic_inventory_projection(payload: dict[str, Any]) -> dict[str, Any]:
+    """Return the release-gating view of one runtime inventory.
+
+    Source line numbers and checkout directory names are diagnostic hints, not
+    executable interfaces.  Requiring byte-for-byte equality for those hints
+    caused unrelated edits near a route to invalidate a sealed candidate even
+    though the route, handler, methods, schedule and side-effect contracts were
+    unchanged.  All interface-bearing fields remain exact and fail closed.
+    """
+
+    normalized = copy.deepcopy(payload)
+    normalized["root_name"] = "<source-root>"
+    for collection in ("http_routes", "daemon_children"):
+        rows = normalized.get(collection, [])
+        if isinstance(rows, list):
+            for row in rows:
+                if isinstance(row, dict):
+                    row.pop("line", None)
+    return normalized
 
 
 def _portable_text(value: Any, root: Path) -> str:
@@ -304,10 +329,19 @@ def collect_launchagents(root: Path, *, include_installed: bool) -> dict[str, li
     return {"checked_in": checked_in, "installed": installed}
 
 
-def build_inventory(root: Path, *, include_installed_launchagents: bool = False) -> dict[str, Any]:
+def build_inventory(
+    root: Path,
+    *,
+    include_installed_launchagents: bool = False,
+    cron_source: Path | None = None,
+) -> dict[str, Any]:
     routes = collect_routes(root)
     skills = collect_skills(root)
-    cron = collect_cron(root)
+    cron = (
+        collect_portable_cron_bytes(cron_source.read_bytes())
+        if cron_source is not None
+        else collect_cron(root)
+    )
     tests = sorted(str(path.relative_to(root)) for path in (root / "tests").glob("test_*.py"))
     launchagents = collect_launchagents(root, include_installed=include_installed_launchagents)
     return {
@@ -341,20 +375,29 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[2])
     parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--cron-source",
+        type=Path,
+        help="Hash-bound cron_jobs.json source when it is intentionally external to the checkout",
+    )
     parser.add_argument("--include-installed-launchagents", action="store_true")
     parser.add_argument("--check", action="store_true", help="Fail when output differs from the generated inventory")
     args = parser.parse_args()
     root = args.root.resolve()
-    inventory = build_inventory(root, include_installed_launchagents=args.include_installed_launchagents)
+    inventory = build_inventory(
+        root,
+        include_installed_launchagents=args.include_installed_launchagents,
+        cron_source=args.cron_source,
+    )
     rendered = json.dumps(inventory, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     if args.check:
         if not args.output or not args.output.exists():
             print("inventory output is missing")
             return 1
         if args.output.read_text(encoding="utf-8") != rendered:
-            print("V2 compatibility inventory is stale; regenerate it")
+            print("runtime interface inventory is stale; regenerate it")
             return 1
-        print("V2 compatibility inventory is current")
+        print("runtime interface inventory is current")
         return 0
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)

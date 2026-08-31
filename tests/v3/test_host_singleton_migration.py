@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from scripts.ops.v3_host_singleton_migration import (
+    ACTIVE_SERVICE_LABELS,
     LABELS,
     HostSingletonMigrationError,
     render_migrated_plist,
@@ -30,6 +31,8 @@ def _release(tmp_path: Path) -> tuple[Path, Path, Path]:
     stable_watchdog = application_root / "bin" / "magi-active-input-method-watchdog.py"
     stable_watchdog.parent.mkdir(parents=True, exist_ok=True)
     stable_watchdog.write_text("pass\n", encoding="utf-8")
+    stable_launcher = application_root / "bin" / "magi-active-release-service.py"
+    stable_launcher.write_text("pass\n", encoding="utf-8")
     return release, python, runtime
 
 
@@ -46,11 +49,21 @@ def _plist(label: str) -> dict:
         / "venv"
         / "bin"
     )
+    stale_v3_runtime_bin = str(
+        Path("/Users")
+        / "ai"
+        / "Library"
+        / "Application Support"
+        / "MAGI"
+        / "runtimes"
+        / "runtime-v3-old"
+        / "bin"
+    )
     return {
         "Label": label,
         "ProgramArguments": ["/bin/example"],
         "EnvironmentVariables": {
-            "PATH": f"{legacy_runtime_bin}:/usr/bin:/bin",
+            "PATH": f"{legacy_runtime_bin}:{stale_v3_runtime_bin}:/usr/bin:/bin",
             "MAGI_ROOT": legacy_desktop,
             "MAGI_ROOT_DIR": legacy_desktop,
         },
@@ -73,12 +86,22 @@ def test_rendered_host_singleton_contains_no_v2_reference(
 
     assert "magi_v2" not in repr(rendered).lower()
     assert "/usr/bin" in rendered["EnvironmentVariables"]["PATH"].split(":")
+    assert "runtime-v3-old" not in rendered["EnvironmentVariables"]["PATH"]
     if label == "com.magi.input-method-watchdog":
         assert rendered["ProgramArguments"][:2] == [
             str(python.resolve()),
             str(runtime.parent.parent / "bin" / "magi-active-input-method-watchdog.py"),
         ]
         assert "MAGI_ROOT" not in rendered["EnvironmentVariables"]
+        assert rendered["WorkingDirectory"] == str(runtime.parent.parent)
+    if label in ACTIVE_SERVICE_LABELS:
+        assert rendered["ProgramArguments"] == [
+            str(python.resolve()),
+            str(runtime.parent.parent / "bin" / "magi-active-release-service.py"),
+            ACTIVE_SERVICE_LABELS[label],
+        ]
+        assert "MAGI_ROOT" not in rendered["EnvironmentVariables"]
+        assert "MAGI_ROOT_DIR" not in rendered["EnvironmentVariables"]
         assert rendered["WorkingDirectory"] == str(runtime.parent.parent)
     if label == "com.magi.omlx-watchdog":
         assert rendered["EnvironmentVariables"]["MAGI_TRAINING_LOCK_PATH"].endswith(
@@ -111,7 +134,8 @@ def test_staging_is_non_mutating_and_hash_bound(tmp_path: Path) -> None:
 
     assert result["status"] == "staged_not_installed"
     assert result["v2_references"] == 0
-    assert len(result["plists"]) == 4
+    assert result["immutable_release_references"] == 0
+    assert len(result["plists"]) == len(LABELS)
     for label in LABELS:
         assert (launchagents / f"{label}.plist").read_bytes() == before[label]
         staged = output / f"{label}.plist"

@@ -9,6 +9,7 @@ from unittest.mock import patch
 import builtins
 import concurrent.futures
 import errno
+import os
 import subprocess
 import threading
 import time
@@ -889,6 +890,89 @@ def test_nas_helper_health_is_not_blocked_by_slow_stage(tmp_path: Path, monkeypa
     ]
 
 
+def test_nas_helper_listdir_child_returns_parallel_metadata(tmp_path: Path):
+    from scripts.ops import osc_shell_nas_helper as helper
+
+    (tmp_path / "子資料夾").mkdir()
+    (tmp_path / "卷證.pdf").write_bytes(b"%PDF")
+
+    payload = helper._listdir_payload_uncached(str(tmp_path))
+
+    assert payload["ok"] is True
+    rows = {row["name"]: row for row in payload["entries"]}
+    assert rows["子資料夾"]["is_dir"] is True
+    assert rows["卷證.pdf"]["is_dir"] is False
+    assert rows["卷證.pdf"]["size"] == 4
+
+
+def test_nas_helper_listdir_cache_avoids_duplicate_smb_reads(tmp_path: Path, monkeypatch):
+    from scripts.ops import osc_shell_nas_helper as helper
+
+    calls = []
+    with helper._LISTDIR_CACHE_LOCK:
+        helper._LISTDIR_CACHE.clear()
+        helper._LISTDIR_PATH_LOCKS.clear()
+        helper._LISTDIR_REFRESHING.clear()
+
+    def successful_listing(path):
+        calls.append(path)
+        return {"ok": True, "entries": [{"name": "卷證.pdf", "is_dir": False}], "count": 1}
+
+    monkeypatch.setattr(helper, "_listdir_payload_uncached", successful_listing)
+    monkeypatch.setattr(helper, "_HELPER_LISTDIR_CACHE_FRESH_SECONDS", 30.0)
+
+    first = helper._listdir_payload(str(tmp_path))
+    second = helper._listdir_payload(str(tmp_path))
+    refreshed = helper._listdir_payload(str(tmp_path), force_refresh=True)
+
+    assert [first["cache_status"], second["cache_status"], refreshed["cache_status"]] == [
+        "miss", "hit", "miss",
+    ]
+    assert calls == [str(tmp_path), str(tmp_path)]
+
+
+def test_nas_helper_serves_stale_success_while_refreshing(tmp_path: Path, monkeypatch):
+    from scripts.ops import osc_shell_nas_helper as helper
+
+    key = os.path.realpath(str(tmp_path))
+    payload = {"ok": True, "entries": [{"name": "既有卷證.pdf", "is_dir": False}], "count": 1}
+    with helper._LISTDIR_CACHE_LOCK:
+        helper._LISTDIR_CACHE.clear()
+        helper._LISTDIR_CACHE[key] = (time.monotonic() - 10.0, payload)
+    scheduled = []
+    monkeypatch.setattr(helper, "_HELPER_LISTDIR_CACHE_FRESH_SECONDS", 1.0)
+    monkeypatch.setattr(helper, "_HELPER_LISTDIR_CACHE_STALE_SECONDS", 60.0)
+    monkeypatch.setattr(helper, "_schedule_listdir_refresh", lambda cache_key, path: scheduled.append((cache_key, path)))
+
+    result = helper._listdir_payload(str(tmp_path))
+
+    assert result["ok"] is True
+    assert result["cache_status"] == "stale"
+    assert result["entries"][0]["name"] == "既有卷證.pdf"
+    assert scheduled == [(key, str(tmp_path))]
+
+
+def test_nas_helper_failed_forced_refresh_keeps_recent_success(tmp_path: Path, monkeypatch):
+    from scripts.ops import osc_shell_nas_helper as helper
+
+    key = os.path.realpath(str(tmp_path))
+    payload = {"ok": True, "entries": [{"name": "既有卷證.pdf", "is_dir": False}], "count": 1}
+    with helper._LISTDIR_CACHE_LOCK:
+        helper._LISTDIR_CACHE.clear()
+        helper._LISTDIR_CACHE[key] = (time.monotonic(), payload)
+    monkeypatch.setattr(
+        helper,
+        "_listdir_payload_uncached",
+        lambda _path: (_ for _ in ()).throw(helper._ListdirHelperError(504, "timeout")),
+    )
+
+    result = helper._listdir_payload(str(tmp_path), force_refresh=True)
+
+    assert result["ok"] is True
+    assert result["cache_status"] == "stale_refresh_failed"
+    assert result["entries"][0]["name"] == "既有卷證.pdf"
+
+
 def test_folder_browse_lists_with_scandir_by_default(tmp_path: Path):
     client = _client()
     case_dir = tmp_path / "案件資料夾"
@@ -1335,6 +1419,104 @@ def test_listdir_metadata_falls_back_when_nas_helper_is_unavailable(tmp_path: Pa
 
     assert rows == [{"name": "卷證.pdf", "is_dir": False, "size": 4, "mtime": 1}]
     assert calls == {"helper": 1, "fallback": 1}
+
+
+def test_listdir_metadata_cache_coalesces_tree_and_browse_reads(tmp_path: Path, monkeypatch):
+    import api.blueprints.osc_files as mod
+
+    calls = []
+    with mod._OSC_NAS_METADATA_CACHE_LOCK:
+        mod._OSC_NAS_METADATA_CACHE.clear()
+
+    def helper_listing(path, timeout=0):
+        calls.append((path, timeout))
+        return [{"name": "卷證.pdf", "is_dir": False, "size": 4, "mtime": 1}]
+
+    monkeypatch.setattr(mod, "_is_network_nas_path", lambda _path: True)
+    monkeypatch.setattr(mod, "_osc_shell_nas_helper_request", helper_listing)
+    monkeypatch.setattr(mod, "_OSC_NAS_METADATA_CACHE_FRESH_SECONDS", 30.0)
+
+    first = mod._listdir_with_metadata_with_retry(str(tmp_path))
+    second = mod._listdir_with_metadata_with_retry(str(tmp_path))
+
+    assert first == second
+    assert len(calls) == 1
+
+
+def test_listdir_metadata_force_refresh_bypasses_gateway_cache(tmp_path: Path, monkeypatch):
+    import api.blueprints.osc_files as mod
+
+    calls = []
+    with mod._OSC_NAS_METADATA_CACHE_LOCK:
+        mod._OSC_NAS_METADATA_CACHE.clear()
+
+    def helper_listing(path, timeout=0, *, force_refresh=False):
+        calls.append(force_refresh)
+        return [{"name": "卷證.pdf", "is_dir": False, "size": 4, "mtime": len(calls)}]
+
+    monkeypatch.setattr(mod, "_is_network_nas_path", lambda _path: True)
+    monkeypatch.setattr(mod, "_osc_shell_nas_helper_request", helper_listing)
+
+    mod._listdir_with_metadata_with_retry(str(tmp_path))
+    refreshed = mod._listdir_with_metadata_with_retry(str(tmp_path), force_refresh=True)
+
+    assert calls == [False, True]
+    assert refreshed[0]["mtime"] == 2
+
+
+def test_listdir_metadata_uses_recent_success_when_helper_fails(tmp_path: Path, monkeypatch):
+    import api.blueprints.osc_files as mod
+
+    key = os.path.realpath(str(tmp_path))
+    rows = [{"name": "既有卷證.pdf", "is_dir": False, "size": 4, "mtime": 1}]
+    with mod._OSC_NAS_METADATA_CACHE_LOCK:
+        mod._OSC_NAS_METADATA_CACHE.clear()
+        mod._OSC_NAS_METADATA_CACHE[key] = (time.monotonic() - 10.0, rows)
+
+    monkeypatch.setattr(mod, "_is_network_nas_path", lambda _path: True)
+    monkeypatch.setattr(mod, "_OSC_NAS_METADATA_CACHE_FRESH_SECONDS", 1.0)
+    monkeypatch.setattr(mod, "_OSC_NAS_METADATA_CACHE_STALE_SECONDS", 60.0)
+    monkeypatch.setattr(
+        mod,
+        "_osc_shell_nas_helper_request",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("helper unavailable")),
+    )
+    monkeypatch.setattr(
+        mod,
+        "_listdir_with_metadata_via_subprocess",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("stale cache must avoid another SMB call")),
+    )
+
+    assert mod._listdir_with_metadata_with_retry(str(tmp_path)) == rows
+
+
+def test_network_browse_does_not_repeat_same_failed_helper_chain(tmp_path: Path, monkeypatch):
+    client = _client()
+    case_dir = tmp_path / "案件資料夾"
+    case_dir.mkdir()
+
+    from api.blueprints import osc_files as mod
+
+    helper_calls = []
+
+    def failed_helper(*_args, **_kwargs):
+        helper_calls.append(True)
+        raise OSError("bounded helper failure")
+
+    monkeypatch.setattr(mod, "_is_network_nas_path", lambda _path: True)
+    monkeypatch.setattr(mod, "_browse_entries_with_helper", failed_helper)
+    with patch("api.blueprints.osc_files._resolve_target_dir", return_value=str(case_dir)), \
+         patch("api.blueprints.osc_files._osc_is_safe_local_path", return_value=True), \
+         patch("api.blueprints.osc_files._osc_isdir_quick", return_value=True):
+        response = client.get(
+            "/api/osc/folders/browse",
+            query_string={"base_path": str(case_dir)},
+        )
+
+    assert response.status_code == 503
+    assert response.headers["Retry-After"] == "1"
+    assert response.get_json()["error"] == "listdir_failed"
+    assert len(helper_calls) == 1
 
 
 def test_folder_tree_hides_listdir_timeout_details_from_ui(tmp_path: Path, monkeypatch):

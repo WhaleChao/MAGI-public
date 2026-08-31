@@ -187,7 +187,8 @@
           "kind": {"type": "string", "maxLength": 64},
           "reference": {"type": "string", "maxLength": 512},
           "committed_at": {"type": "string", "format": "date-time"},
-          "idempotency_key": {"type": ["string", "null"], "maxLength": 256}
+          "idempotency_key": {"type": ["string", "null"], "maxLength": 256},
+          "trace_id": {"type": ["string", "null"], "pattern": "^[0-9a-f]{32}$"}
         }
       }
     },

@@ -313,6 +313,18 @@ def test_file_manager_disables_expensive_directory_summaries() -> None:
     assert "&summarize_dirs=0" in file_manager
 
 
+def test_file_manager_retries_one_transient_nas_read_and_preserves_recent_listing() -> None:
+    file_manager = (ROOT / "static/osc/tabs/file_manager.js").read_text(encoding="utf-8")
+
+    assert "FM_DIRECTORY_RETRY_DELAY_MS = 900" in file_manager
+    assert "return /directory_io_busy|NAS 正在處理其他資料夾/i.test(message);" in file_manager
+    assert "listdir_failed has already exhausted the helper/cache contract" in file_manager
+    assert "return apiDirectoryRead(url);" in file_manager
+    assert "entryCache: new Map()" in file_manager
+    assert "treeCache: new Map()" in file_manager
+    assert "目前顯示最近一次成功內容" in file_manager
+
+
 def test_file_manager_initialization_cannot_duplicate_drop_uploads() -> None:
     file_manager = (ROOT / "static/osc/tabs/file_manager.js").read_text(encoding="utf-8")
 

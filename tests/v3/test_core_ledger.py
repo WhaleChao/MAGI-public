@@ -211,6 +211,7 @@ def test_verified_commit_persists_receipts_artifacts_and_metrics(ledger: JobLedg
     assert finished.ambiguous_side_effect is False
     assert finished.artifacts == [{"kind": "receipt", "uri": "memory://artifact/1"}]
     assert finished.side_effect_receipts[0]["reference"] == "offline-provider-1"
+    assert len(finished.side_effect_receipts[0]["trace_id"]) == 32
     assert finished.metrics == {"duration_ms": 1000, "peak_footprint_mb": 42.5}
     validate_json(
         finished.to_envelope(),

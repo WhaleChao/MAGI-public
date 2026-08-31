@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "policy": "Every user-reported RC642/RC643 failure remains a named V3 regression contract; scenario tests use disposable data and never mutate production.",
+  "scenarios": [
+    {
+      "id": "file_review_huang_taicheng_payment_identity_change",
+      "reason_code": "FILE_REVIEW_PENDING_PAYMENT_IDENTITY_CHANGED",
+      "tests": [
+        "tests/test_file_review_notifications.py::test_portal_pending_state_tracks_case_identity_when_count_is_unchanged",
+        "tests/test_file_review_notifications.py::test_payment_check_notice_emits_only_for_actionable_payment_work"
+      ]
+    },
+    {
+      "id": "laf_existing_nas_attachments_not_missing",
+      "reason_code": "LAF_NAS_ATTACHMENT_ALREADY_ARCHIVED",
+      "tests": [
+        "tests/test_laf_portal_retry_reconciliation.py::test_expired_retry_is_done_when_matching_attachment_exists_locally",
+        "tests/test_laf_portal_new_files_scan.py::test_run_portal_new_files_scan_keeps_unverified_mapping_out_of_missing_count",
+        "tests/test_laf_case_storage_authority.py::test_folder_builder_selects_only_authoritative_smb"
+      ]
+    },
+    {
+      "id": "laf_archived_case_retry_reconciliation",
+      "reason_code": "LAF_ARCHIVED_RETRY_RECONCILED",
+      "tests": [
+        "tests/test_laf_portal_retry_reconciliation.py::test_retry_reconciles_case_moved_from_cloud_mirror_to_closed_nas",
+        "tests/test_laf_portal_retry_reconciliation.py::test_inventory_backfill_cannot_requeue_archived_retry"
+      ]
+    },
+    {
+      "id": "laf_case_stage_and_path_reference_repair",
+      "reason_code": "CASE_STAGE_NORMALIZED_AND_REFERENCES_UPDATED",
+      "tests": [
+        "tests/test_laf_case_classifier.py::test_folder_builder_never_leaks_laf_criminal_service_label",
+        "tests/test_osc_folder_rename.py::test_case_root_folder_rename_updates_case_path_and_references",
+        "tests/test_osc_folder_rename.py::test_path_reference_replace_repairs_stale_pdf_namer_case_index"
+      ]
+    },
+    {
+      "id": "scheduled_deferred_is_not_failed",
+      "reason_code": "EXPECTED_RESOURCE_DEFERRAL_NON_RED",
+      "tests": [
+        "tests/v3/test_cron_service.py::test_v3_cron_persists_resource_guard_deferral_as_non_red_status",
+        "tests/v3/test_function_health_operational_semantics.py::test_explicit_retryable_deferred_receipt_is_not_a_red_health_artifact"
+      ]
+    },
+    {
+      "id": "funnel_external_outage_requires_offhost_evidence",
+      "reason_code": "OFFHOST_CANARY_REQUIRED",
+      "tests": [
+        "tests/test_tailscale_funnel_healthcheck.py::test_sealed_release_cannot_claim_external_green_without_offhost_receipt",
+        "tests/test_tailscale_funnel_healthcheck.py::test_fresh_offhost_receipt_allows_external_availability_claim",
+        "tests/v3/test_external_canary.py::test_tamper_tailnet_or_missing_ipv6_fails_closed"
+      ]
+    },
+    {
+      "id": "predecessor_failure_cannot_redlight_active_release",
+      "reason_code": "PREDECESSOR_EVIDENCE_HISTORICAL_ONLY",
+      "tests": [
+        "tests/v3/test_evidence_ledger.py::test_predecessor_failure_remains_history_but_not_active_latest",
+        "tests/v3/test_function_health_operational_semantics.py::test_predecessor_release_health_receipt_is_archived_not_failed"
+      ]
+    }
+  ]
+}

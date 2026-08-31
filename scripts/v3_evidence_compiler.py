@@ -27,13 +27,14 @@ from typing import Any, Mapping, Sequence
 if __package__ in {None, ""}:  # Support ``python scripts/v3_evidence_compiler.py``.
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from scripts.architecture.generate_v2_inventory import (
+from scripts.architecture.generate_runtime_inventory import (
     collect_daemon_children,
     collect_launchagents,
     collect_portable_cron_bytes,
     collect_routes,
     collect_skills,
     project_inventory_to_release,
+    semantic_inventory_projection,
 )
 from scripts.v3_backup_prepare import REQUIRED_COVERAGE, verify_backup
 from scripts.v3_campaign.runner import (
@@ -45,6 +46,11 @@ from scripts.v3_campaign.runner import (
     _validate_release_quality_certification_evidence,
     _validate_route_certification_evidence,
     verify_release_bundle,
+)
+from scripts.v3_deploy_prepare import (
+    DeployPrepareBlocked,
+    _validate_production_release_root,
+    _validate_release as _validate_deploy_release,
 )
 from scripts.v3_validation.release_quality_evidence import (
     EXPECTED_GOLDEN_SETS,
@@ -58,6 +64,10 @@ from scripts.v3_validation.resource_performance_evidence import (
     GATE_IDS as RESOURCE_PERFORMANCE_GATE_IDS,
     ResourcePerformanceEvidenceError,
     summarize_report as summarize_resource_performance_report,
+)
+from scripts.v3_validation.worker_soak_evidence import (
+    WorkerSoakEvidenceError,
+    summarize_worker_soak_measurements,
 )
 from scripts.v3_release_gate import (
     CONTEXT_FIELDS,
@@ -249,7 +259,7 @@ def _sha256(path: Path) -> str:
     return _freeze(path).sha256
 
 
-def _load_json(path: Path, description: str) -> dict[str, Any]:
+def _load_json_value(path: Path, description: str) -> Any:
     try:
         value = json.loads(
             _freeze(path).data.decode("utf-8"),
@@ -257,6 +267,11 @@ def _load_json(path: Path, description: str) -> dict[str, Any]:
         )
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise EvidenceCompileError(f"{description} is unreadable or invalid: {exc}") from exc
+    return value
+
+
+def _load_json(path: Path, description: str) -> dict[str, Any]:
+    value = _load_json_value(path, description)
     if not isinstance(value, dict):
         raise EvidenceCompileError(f"{description} must be a JSON object")
     return value
@@ -1123,6 +1138,7 @@ def compile_campaign_evidence(
         from scripts.v3_validation.schedule_evidence import (
             ScheduleEvidenceError,
             derive_schedule_gate_metrics,
+            enabled_job_ids_from_cron,
         )
 
         capacity_paths, body_paths = _schedule_certification_report_paths(
@@ -1157,9 +1173,13 @@ def compile_campaign_evidence(
         reports = [_load_json(path, f"schedule capacity report {index}") for index, path in enumerate(capacity_paths, 1)]
         body_reports = [_load_json(path, f"schedule body report {index}") for index, path in enumerate(body_paths, 1)]
         try:
+            enabled_job_ids = enabled_job_ids_from_cron(
+                _load_json_value(cron_path, "campaign cron snapshot")
+            )
             schedule_metrics = derive_schedule_gate_metrics(
                 reports,
                 body_reports,
+                enabled_job_ids=enabled_job_ids,
                 cron_jobs_sha256=_sha256(cron_path),
                 dispatch_policy_sha256=_sha256(
                     release_root / source_paths["upstream_schedule_dispatch_policy"]
@@ -1821,36 +1841,16 @@ def compile_campaign_evidence(
                 "worker soak lacks the required independent pass rows"
             )
         measurements = [row["structured_evidence"]["measurements"] for row in soak]
-        for row_index, item in enumerate(measurements):
-            for field in (
-                "cycles_requested",
-                "cycles_completed",
-                "process_groups_gone",
-                "active_workers_after",
-                "governor_slots_after",
-                "fd_drift",
-            ):
-                _nonnegative_int(item.get(field), f"worker soak row {row_index} {field}")
+        try:
+            metrics = summarize_worker_soak_measurements(measurements)
+        except WorkerSoakEvidenceError as exc:
+            raise EvidenceCompileError(str(exc)) from exc
         statuses["hundred_cycle_worker_reap_soak_passed"] = _emit(
             output=output,
             evidence_id="hundred_cycle_worker_reap_soak_passed",
             context=context,
             config=config,
-            metrics={
-                "cycles": sum(item["cycles_completed"] for item in measurements),
-                "unreaped_workers": sum(
-                    max(0, item["cycles_completed"] - item["process_groups_gone"])
-                    for item in measurements
-                ),
-                "resource_baseline_restored": all(
-                    item.get("active_workers_after") == 0
-                    and item.get("governor_slots_after") == 0
-                    and type(item.get("fd_drift")) is int
-                    and item["fd_drift"] >= 0
-                    and item["fd_drift"] <= 2
-                    for item in measurements
-                ),
-            },
+            metrics=metrics,
             sources=sources,
             started_at=started,
             completed_at=completed,
@@ -2179,7 +2179,7 @@ def compile_release_evidence(
         _load_json(root / "RELEASE_COMPLETE.json", "release completion marker").get("completed_at"),
         "release completed_at",
     )
-    inventory_path = root / "docs" / "architecture" / "v3" / "generated" / "v2_inventory.json"
+    inventory_path = root / "docs" / "architecture" / "v3" / "generated" / "runtime_inventory.json"
     inventory = _load_json(inventory_path, "portable source inventory")
     _exact_nonnegative_int(
         inventory.get("schema_version"), 1, "portable source inventory schema_version"
@@ -2204,7 +2204,9 @@ def compile_release_evidence(
     # Directory naming is not an executable interface; normalize only that
     # deployment-copy field before comparing every discovered interface row.
     regenerated["root_name"] = expected_projection.get("root_name")
-    portable_current = expected_projection == regenerated
+    portable_current = semantic_inventory_projection(
+        expected_projection
+    ) == semantic_inventory_projection(regenerated)
     input_manifest, input_paths = _portable_inventory_input_manifest(root, bundle)
     common_sources = [
         SourceArtifact("upstream_release_marker", root / "RELEASE_COMPLETE.json"),
@@ -2333,6 +2335,7 @@ def compile_deploy_evidence(
         marker.get("status") != "prepared_not_installed"
         or marker.get("ready_to_install") is not True
         or marker.get("mutation_performed") is not False
+        or marker.get("deployment_mode") != "production"
         or marker.get("release_id") != bundle.release_id
         or marker.get("release_manifest_sha256") != bundle.manifest_sha256
     ):
@@ -2346,6 +2349,7 @@ def compile_deploy_evidence(
     if (
         manifest.get("status") != "prepared_not_installed"
         or manifest.get("mutation_performed") is not False
+        or manifest.get("deployment_mode") != "production"
         or manifest.get("release_id") != bundle.release_id
         or manifest.get("release_manifest_sha256") != bundle.manifest_sha256
     ):
@@ -2356,8 +2360,25 @@ def compile_deploy_evidence(
         )
     except OSError as exc:
         raise EvidenceCompileError("deploy manifest release path is missing") from exc
-    if bound_release_manifest != (release_root.resolve(strict=True) / "release-manifest.json"):
-        raise EvidenceCompileError("deploy manifest points at another release bundle")
+    try:
+        candidate_root, candidate_identity = _validate_deploy_release(release_root)
+        installed_root, installed_identity = _validate_production_release_root(
+            candidate_root,
+            candidate_identity,
+            bound_release_manifest.parent,
+        )
+    except (OSError, DeployPrepareBlocked) as exc:
+        raise EvidenceCompileError(
+            f"deploy manifest canonical release binding is invalid: {exc}"
+        ) from exc
+    if (
+        bound_release_manifest != installed_identity.manifest_path
+        or installed_identity.release_id != bundle.release_id
+        or installed_identity.manifest_sha256 != bundle.manifest_sha256
+    ):
+        raise EvidenceCompileError(
+            "deploy manifest does not bind the immutable candidate-equivalent installed release"
+        )
     artifact_rows = manifest.get("artifacts")
     roles = manifest.get("roles")
     if not isinstance(artifact_rows, list) or not isinstance(roles, list):
@@ -2391,6 +2412,14 @@ def compile_deploy_evidence(
         SourceArtifact("upstream_deploy_manifest", manifest_path),
         SourceArtifact("upstream_release_marker", release_root / "RELEASE_COMPLETE.json"),
         SourceArtifact("upstream_release_manifest", release_root / "release-manifest.json"),
+        SourceArtifact(
+            "upstream_installed_release_marker",
+            installed_root / "RELEASE_COMPLETE.json",
+        ),
+        SourceArtifact(
+            "upstream_installed_release_manifest",
+            installed_root / "release-manifest.json",
+        ),
         SourceArtifact("upstream_campaign_report", campaign_paths[0]),
         *[
             SourceArtifact("upstream_launchagent", artifact_paths[path], "application/x-plist")

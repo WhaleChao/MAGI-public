@@ -36,9 +36,13 @@
         dragMove: null,
         lastCaseResults: [],
         driveRoots: [],
+        entryCache: new Map(),
+        treeCache: new Map(),
     };
     const FM_INTERNAL_DRAG_TYPE = 'application/x-paperclip-file-manager-rel';
     const FM_MOBILE_QUERY = window.matchMedia('(max-width: 760px)');
+    const FM_DIRECTORY_RETRY_DELAY_MS = 900;
+    const FM_DIRECTORY_CACHE_LIMIT = 40;
 
     function isMobileFileManager() {
         return !!(FM_MOBILE_QUERY && FM_MOBILE_QUERY.matches);
@@ -118,21 +122,70 @@
     }
 
     // ── API helpers ────────────────────────────────────────────────────
-    async function apiBrowse(basePath, relativePath) {
+    function directoryCacheKey(basePath, relativePath) {
+        return String(basePath || '') + '\u0000' + String(relativePath || '')
+            + '\u0000hidden=' + (FM.showHidden ? '1' : '0');
+    }
+
+    function cloneDirectoryData(data) {
+        if (!data || typeof data !== 'object') return data;
+        const cloned = Object.assign({}, data);
+        if (Array.isArray(data.folders)) cloned.folders = data.folders.map(item => Object.assign({}, item));
+        if (Array.isArray(data.files)) cloned.files = data.files.map(item => Object.assign({}, item));
+        if (Array.isArray(data.children)) cloned.children = data.children.map(item => Object.assign({}, item));
+        return cloned;
+    }
+
+    function rememberDirectoryData(cache, key, data) {
+        if (!cache || !data || data.ok === false) return;
+        cache.delete(key);
+        cache.set(key, cloneDirectoryData(data));
+        while (cache.size > FM_DIRECTORY_CACHE_LIMIT) {
+            cache.delete(cache.keys().next().value);
+        }
+    }
+
+    function cachedDirectoryData(cache, key) {
+        const data = cache && cache.get(key);
+        return data ? cloneDirectoryData(data) : null;
+    }
+
+    function isRetryableDirectoryError(error) {
+        const payloadCode = error && error.payload && error.payload.error;
+        const message = String(payloadCode || (error && error.message) || error || '');
+        // listdir_failed has already exhausted the helper/cache contract and
+        // must not start another long SMB collision from the browser. Only a
+        // fast bulkhead-busy response gets one delayed retry.
+        return /directory_io_busy|NAS 正在處理其他資料夾/i.test(message);
+    }
+
+    async function apiDirectoryRead(url) {
+        try {
+            return await api(url);
+        } catch (error) {
+            if (!isRetryableDirectoryError(error)) throw error;
+            await new Promise(resolve => setTimeout(resolve, FM_DIRECTORY_RETRY_DELAY_MS));
+            return api(url);
+        }
+    }
+
+    async function apiBrowse(basePath, relativePath, forceRefresh) {
         const url = '/api/osc/folders/browse?'
             + 'base_path=' + encodeURIComponent(basePath)
             + '&relative_path=' + encodeURIComponent(relativePath || '')
             + '&show_hidden=' + (FM.showHidden ? '1' : '0')
-            + '&summarize_dirs=0';
-        return api(url);
+            + '&summarize_dirs=0'
+            + (forceRefresh ? '&refresh=1' : '');
+        return apiDirectoryRead(url);
     }
 
-    async function apiTree(basePath, relativePath) {
+    async function apiTree(basePath, relativePath, forceRefresh) {
         const url = '/api/osc/folders/tree?'
             + 'base_path=' + encodeURIComponent(basePath)
             + '&relative_path=' + encodeURIComponent(relativePath || '')
-            + '&show_hidden=' + (FM.showHidden ? '1' : '0');
-        return api(url);
+            + '&show_hidden=' + (FM.showHidden ? '1' : '0')
+            + (forceRefresh ? '&refresh=1' : '');
+        return apiDirectoryRead(url);
     }
 
     async function apiCaseSearch(query) {
@@ -764,20 +817,26 @@
     }
 
     // ── Render: tree (lazy-load) ──────────────────────────────────────
-    async function renderTreeRoot() {
+    async function renderTreeRoot(forceRefresh) {
         const root = document.getElementById('fmTree');
         if (!root) return;
         const seq = ++FM.treeSeq;
         const baseAtStart = FM.basePath;
+        const cacheKey = directoryCacheKey(FM.basePath, '');
         root.innerHTML = '<div class="fm-loading-inline">載入樹狀…</div>';
         let data;
+        let usedCachedData = false;
         try {
-            data = await apiTree(FM.basePath, '');
+            data = await apiTree(FM.basePath, '', !!forceRefresh);
         } catch (e) {
-            if (seq === FM.treeSeq && baseAtStart === FM.basePath) {
-                root.innerHTML = '<div class="fm-empty">⚠️ ' + escapeHTML(e.message || e) + '</div>';
+            data = cachedDirectoryData(FM.treeCache, cacheKey);
+            usedCachedData = !!data;
+            if (!data) {
+                if (seq === FM.treeSeq && baseAtStart === FM.basePath) {
+                    root.innerHTML = '<div class="fm-empty">⚠️ ' + escapeHTML(e.message || e) + '</div>';
+                }
+                return;
             }
-            return;
         }
         if (seq !== FM.treeSeq || baseAtStart !== FM.basePath) return;
         if (!data || data.ok === false) {
@@ -790,6 +849,7 @@
             root.innerHTML = '<div class="fm-empty">⚠️ ' + escapeHTML(friendly) + diagHtml + '</div>';
             return;
         }
+        if (!usedCachedData) rememberDirectoryData(FM.treeCache, cacheKey, data);
         root.innerHTML = '';
         const homeNode = makeTreeNode({ name: rootDisplayName(), relative_path: '', has_subdirs: true }, true);
         root.appendChild(homeNode);
@@ -831,12 +891,19 @@
                 childWrap.innerHTML = '<div class="fm-loading-inline">…</div>';
                 wrap.appendChild(childWrap);
                 let data;
+                const cacheKey = directoryCacheKey(FM.basePath, node.relative_path || '');
+                let usedCachedData = false;
                 try {
                     data = await apiTree(FM.basePath, node.relative_path || '');
                 } catch (e) {
-                    childWrap.innerHTML = '<div class="fm-loading-inline">載入失敗：' + escapeHTML(e.message || e) + '</div>';
-                    return;
+                    data = cachedDirectoryData(FM.treeCache, cacheKey);
+                    usedCachedData = !!data;
+                    if (!data) {
+                        childWrap.innerHTML = '<div class="fm-loading-inline">載入失敗：' + escapeHTML(e.message || e) + '</div>';
+                        return;
+                    }
                 }
+                if (!usedCachedData) rememberDirectoryData(FM.treeCache, cacheKey, data);
                 childWrap.innerHTML = '';
                 if (data && data.ok && (data.children || []).length) {
                     for (const c of data.children) {
@@ -864,10 +931,11 @@
     }
 
     // ── Navigation ────────────────────────────────────────────────────
-    async function navigateTo(rel) {
+    async function navigateTo(rel, forceRefresh) {
         if (!FM.basePath) return;
         const seq = ++FM.navSeq;
         const baseAtStart = FM.basePath;
+        const cacheKey = directoryCacheKey(FM.basePath, rel);
         FM.loading = true;
         FM.selectedRel = null;
         FM.selectedType = null;
@@ -878,10 +946,20 @@
         setStatus('載入中…');
         let data;
         try {
-            data = await apiBrowse(FM.basePath, rel);
+            data = await apiBrowse(FM.basePath, rel, !!forceRefresh);
         } catch (e) {
             if (seq !== FM.navSeq || baseAtStart !== FM.basePath) return;
             FM.loading = false;
+            const cached = cachedDirectoryData(FM.entryCache, cacheKey);
+            if (cached) {
+                FM.currentRel = cached.current_relative_path || rel || '';
+                setStatus('NAS 回應暫時延遲；目前顯示最近一次成功內容，重新整理時會再更新。');
+                renderBreadcrumb();
+                renderEntries(cached);
+                highlightTree(FM.currentRel);
+                focusFilePaneOnMobile();
+                return;
+            }
             const msg = e.message || e || '未知錯誤';
             setStatus('載入失敗：' + msg, true);
             renderEntries({ ok: false, error: msg });
@@ -890,11 +968,22 @@
         if (seq !== FM.navSeq || baseAtStart !== FM.basePath) return;
         FM.loading = false;
         if (!data || data.ok === false) {
+            const cached = cachedDirectoryData(FM.entryCache, cacheKey);
+            if (cached) {
+                FM.currentRel = cached.current_relative_path || rel || '';
+                setStatus('NAS 回應暫時延遲；目前顯示最近一次成功內容，重新整理時會再更新。');
+                renderBreadcrumb();
+                renderEntries(cached);
+                highlightTree(FM.currentRel);
+                focusFilePaneOnMobile();
+                return;
+            }
             setStatus('載入失敗：' + ((data && data.error) || '未知錯誤'), true);
             renderEntries(data);
             return;
         }
         FM.currentRel = data.current_relative_path || '';
+        rememberDirectoryData(FM.entryCache, cacheKey, data);
         setStatus('');
         renderBreadcrumb();
         renderEntries(data);
@@ -964,7 +1053,12 @@
     }
 
     async function refresh() {
-        if (FM.basePath) await navigateTo(FM.currentRel);
+        if (!FM.basePath) return;
+        await renderTreeRoot(true);
+        // The forced root-tree read already refreshed the same directory.
+        // Reuse its gateway cache at the root; only force a second read when
+        // the visible pane is a distinct subdirectory.
+        await navigateTo(FM.currentRel, !!FM.currentRel);
     }
 
     // ── Rename / move-to-trash API (Phase 2 commit 11) ───────────────

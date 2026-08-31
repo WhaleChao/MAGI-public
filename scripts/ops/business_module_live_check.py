@@ -47,6 +47,8 @@ if not Path(PYTHON).exists():
 DRIVE_SYNC_STATUS_SLA_HOURS = 24.0
 CALENDAR_TODO_STATUS_SLA_HOURS = 24.0
 FILE_REVIEW_STATUS_SLA_HOURS = 0.5
+FILE_REVIEW_EXTERNAL_DEFER_CODES = frozenset({"ola_error_page"})
+FILE_REVIEW_EXTERNAL_DEFER_MIN_ATTEMPTS = 2
 LAF_GMAIL_STATUS_SLA_HOURS = 0.75
 LAF_PORTAL_STATUS_SLA_HOURS = 8.0
 TRANSCRIPT_SYNC_STATUS_SLA_HOURS = 18.0
@@ -164,8 +166,12 @@ _RELEASE_BOUND_ENV = {
 }
 _HOST_SINGLETON_LABELS = (
     "com.magi.input-method-watchdog",
+    "com.magi.memory-watchdog",
+    "com.magi.mlx-mtp",
     "com.magi.omlx",
     "com.magi.omlx-watchdog",
+    "com.magi.paperclip-share-gateway",
+    "com.magi.paperclip-share-tunnel",
     "com.magi.rpc",
 )
 
@@ -792,6 +798,65 @@ def _artifact_age_seconds(path: Path, payload: dict[str, Any], *time_keys: str) 
     return _age_seconds(path)
 
 
+def _file_review_external_dependency_deferred(probe: dict[str, Any] | None) -> bool:
+    """Recognize a bounded, evidenced Judicial OLA upstream outage.
+
+    Authentication, CAPTCHA, timeout, navigation, and unknown failures remain
+    fail-closed.  Only the dedicated OLA error-page reason is deferrable, and
+    only after the production retry contract observed it twice with a
+    content-free detail digest.
+    """
+
+    live_probe = probe if isinstance(probe, dict) else {}
+    parsed = live_probe.get("parsed") if isinstance(live_probe.get("parsed"), dict) else {}
+    portal = parsed.get("portal") if isinstance(parsed.get("portal"), dict) else {}
+    detail_sha256 = str(portal.get("error_detail_sha256") or "").strip().lower()
+    try:
+        attempts = int(portal.get("attempts") or 0)
+    except (TypeError, ValueError):
+        attempts = 0
+    return bool(
+        str(live_probe.get("name") or "") == "file_review_downloadable_probe"
+        and parsed.get("success") is False
+        and portal.get("success") is False
+        and str(portal.get("error_code") or "").strip().lower()
+        in FILE_REVIEW_EXTERNAL_DEFER_CODES
+        and attempts >= FILE_REVIEW_EXTERNAL_DEFER_MIN_ATTEMPTS
+        and portal.get("error_detail_present") is True
+        and re.fullmatch(r"[0-9a-f]{64}", detail_sha256)
+    )
+
+
+def _classify_file_review_probe(probe: dict[str, Any]) -> dict[str, Any]:
+    """Separate an evidenced upstream outage from a MAGI function failure."""
+
+    if not _file_review_external_dependency_deferred(probe):
+        return probe
+    classified = dict(probe)
+    parsed = dict(probe.get("parsed") or {})
+    parsed.update(
+        {
+            "deferred": True,
+            "status": "deferred",
+            "reason": "judicial_ola_upstream_unavailable",
+            "external_dependency": "judicial_ola",
+            "portal_live_verified": False,
+        }
+    )
+    classified.update(
+        {
+            "ok": True,
+            "status": "deferred",
+            "deferred": True,
+            "severity": "warning",
+            "business_impact": False,
+            "classification": "external_dependency_deferred",
+            "parsed": parsed,
+        }
+    )
+    return classified
+
+
 def _file_review_ingestion_coverage_live(
     max_age_hours: float = FILE_REVIEW_STATUS_SLA_HOURS,
     *,
@@ -837,6 +902,7 @@ def _file_review_ingestion_coverage_live(
         and live_portal_active_pid > 0
         and _pid_alive(live_portal_active_pid)
     )
+    live_portal_external_deferred = _file_review_external_dependency_deferred(live_probe)
     age = _artifact_age_seconds(path, data, "updated_at")
     phase = str(data.get("phase") or "").strip().lower()
     pid = int(data.get("pid") or 0)
@@ -990,11 +1056,20 @@ def _file_review_ingestion_coverage_live(
     reasons: list[str] = []
     if age is None or age > max_age_hours * 3600:
         reasons.append("stale_file_review_state")
-    if not active_running and not bool(result.get("ok")):
+    if (
+        not active_running
+        and not live_portal_external_deferred
+        and not bool(result.get("ok"))
+    ):
         reasons.append("file_review_worker_failed")
     portal_verified = bool(result.get("portal_verified")) or live_portal_verified
     portal_probe_ok = bool(parsed.get("portal_probe_ok")) or live_portal_verified
-    if not active_running and not live_portal_busy and (not portal_verified or not portal_probe_ok):
+    if (
+        not active_running
+        and not live_portal_busy
+        and not live_portal_external_deferred
+        and (not portal_verified or not portal_probe_ok)
+    ):
         reasons.append("portal_not_verified")
     if int(parsed.get("scan_errors") or 0) > 0:
         reasons.append("source_scan_errors")
@@ -1013,9 +1088,15 @@ def _file_review_ingestion_coverage_live(
     # (download or verified duplicate) before coverage is healthy.
     if live_downloadable > 0 and not active_running and not download_verified:
         reasons.append("portal_downloads_waiting_worker")
+    deferred = bool(live_portal_external_deferred and not reasons)
     return {
         "name": "file_review_ingestion_coverage_live",
         "ok": not reasons,
+        "status": "deferred" if deferred else ("passed" if not reasons else "failed"),
+        "deferred": deferred,
+        "severity": "warning" if deferred else ("info" if not reasons else "error"),
+        "business_impact": False if deferred else bool(reasons),
+        "classification": "external_dependency_deferred" if deferred else "live_coverage",
         "parsed": {
             "age_hours": round((age or 0) / 3600, 2) if age is not None else None,
             "sla_hours": max_age_hours,
@@ -1025,6 +1106,13 @@ def _file_review_ingestion_coverage_live(
             "portal_verified": portal_verified,
             "portal_verified_by_current_live_probe": live_portal_verified,
             "portal_waiting_on_active_owner": live_portal_busy,
+            "portal_waiting_on_external_dependency": live_portal_external_deferred,
+            "external_dependency": "judicial_ola" if live_portal_external_deferred else "",
+            "deferred_reason": (
+                "judicial_ola_upstream_unavailable"
+                if live_portal_external_deferred
+                else ""
+            ),
             "portal_active_owner_pid": live_portal_active_pid if live_portal_busy else 0,
             "portal_raw_rows": int(
                 result.get("portal_raw_row_count")
@@ -2393,7 +2481,7 @@ def _playwright_resource_cleanup_live() -> dict[str, Any]:
 def _summarize(results: list[dict[str, Any]]) -> str:
     lines = [f"📋 業務三模組 LIVE/健康檢查 — {datetime.now().strftime('%Y-%m-%d %H:%M')}"]
     for r in results:
-        mark = "✅" if r.get("ok") else "❌"
+        mark = "⏳" if r.get("deferred") else ("✅" if r.get("ok") else "❌")
         detail = ""
         parsed = r.get("parsed")
         if isinstance(parsed, dict):
@@ -2435,6 +2523,12 @@ def _summarize(results: list[dict[str, Any]]) -> str:
                 detail = f"{parsed.get('dry_run_status')} -> {parsed.get('target_case_status')}"
             elif parsed.get("errors"):
                 detail = str(parsed.get("errors"))[:120]
+            if r.get("deferred"):
+                deferred_reason = str(
+                    parsed.get("deferred_reason") or parsed.get("reason") or ""
+                ).strip()
+                if deferred_reason:
+                    detail = deferred_reason[:180]
             if not r.get("ok") and parsed.get("next_action"):
                 action = str(parsed.get("next_action"))[:180]
                 detail = f"{detail} / next: {action}" if detail else f"next: {action}"
@@ -2827,7 +2921,7 @@ def main(argv: list[str] | None = None) -> int:
         _notification_delivery_status_live(),
         _laf_closing_transfer_notice_live(),
     ])
-    file_review_probe = _run(
+    file_review_probe = _classify_file_review_probe(_run(
         "file_review_downloadable_probe",
         [
             PYTHON,
@@ -2836,7 +2930,7 @@ def main(argv: list[str] | None = None) -> int:
             'downloadable_probe {"days":30,"notify":false,"require_portal":true,"read_only":true}',
         ],
         timeout=900,
-    )
+    ))
     results.extend([
         _run("laf_self_test", [PYTHON, str(REPO_ROOT / "skills" / "laf-orchestrator" / "action.py"), "--task", "self_test"], timeout=120),
         _run("file_review_self_test", [PYTHON, str(REPO_ROOT / "skills" / "file-review-orchestrator" / "action.py"), "--task", "self_test"], timeout=120),

@@ -757,16 +757,12 @@ def test_function_health_fixture_uses_only_hash_bound_cron_snapshot(
 ) -> None:
     cron = tmp_path / "candidate-cron.json"
     jobs = json.loads(_bound_cron_snapshot_bytes())
-    source_root = str(ROOT)
-    if not any(source_root in str(job.get("command") or "") for job in jobs):
-        # Candidate snapshots intentionally keep the mutable operational
-        # checkout path until deployment rebases them into the sealed root.
-        source_root = str(ROOT.parent / "source-v3-current")
-    rebased = next(
-        job for job in jobs if source_root in str(job.get("command") or "")
-    )
-    rebased["command"] = str(rebased["command"]).replace(
-        source_root, "/sealed/releases/magi-v3"
+    # The hash-binding contract does not depend on a particular checkout name.
+    # Change one candidate definition deterministically so this test remains
+    # valid in worktrees, installed releases, and deployment-rebased snapshots.
+    rebased = next(job for job in jobs if str(job.get("command") or "").strip())
+    rebased["command"] = (
+        str(rebased["command"]) + " --candidate-snapshot-binding-probe"
     )
     payload = (json.dumps(jobs, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
     cron.write_bytes(payload)

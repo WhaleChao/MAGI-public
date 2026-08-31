@@ -74,7 +74,11 @@ from api.runtime_paths import (
     get_exports_dir,
     get_laf_processed_emails_path,
 )
-from skills.engine.legal_web_adapter import format_legal_web_engine_log, resolve_legal_web_engine
+from skills.engine.legal_web_adapter import (
+    format_legal_web_engine_log,
+    preinstalled_selenium_driver_kwargs,
+    resolve_legal_web_engine,
+)
 from skills.bridge.shared_utils.text_utils import normalize_spaces as _normalize_spaces
 from skills.bridge.shared_utils.case_number_utils import RE_LAF_CASE_NUMBER
 
@@ -1551,7 +1555,6 @@ class LAFWebAutomation:
         
         # 基本參數
         chrome_options.add_argument('--disable-gpu')
-        chrome_options.add_argument('--no-sandbox')
         chrome_options.add_argument('--disable-dev-shm-usage')
         chrome_options.add_argument('--window-size=1920,1080')
         
@@ -1567,19 +1570,16 @@ class LAFWebAutomation:
             chrome_options.binary_location = binary_path
         
         try:
-            # Check availability of webdriver_manager locally inside function
-            if importlib.util.find_spec("webdriver_manager") is not None:
-                from webdriver_manager.chrome import ChromeDriverManager
-                from selenium.webdriver.chrome.service import Service
-                service = Service(ChromeDriverManager().install())
-                return webdriver.Chrome(service=service, options=chrome_options)
-            else:
-                 return webdriver.Chrome(options=chrome_options)
-        except ImportError:
-            return webdriver.Chrome(options=chrome_options)
+            return webdriver.Chrome(
+                options=chrome_options,
+                **preinstalled_selenium_driver_kwargs("chrome"),
+            )
         except Exception as e:
             self.log(f"⚠️ 建立 Chrome Driver 失敗: {e}")
-            return webdriver.Chrome(options=chrome_options)
+            return webdriver.Chrome(
+                options=chrome_options,
+                **preinstalled_selenium_driver_kwargs("chrome"),
+            )
     
     def _create_edge_driver(self, binary_path: str = None):
         """建立 Edge WebDriver (含反偵測措施)"""
@@ -1625,7 +1625,6 @@ class LAFWebAutomation:
         
         # 基本參數
         edge_options.add_argument('--disable-gpu')
-        edge_options.add_argument('--no-sandbox')
         edge_options.add_argument('--disable-dev-shm-usage')
         edge_options.add_argument('--window-size=1920,1080')
         
@@ -1641,18 +1640,16 @@ class LAFWebAutomation:
              edge_options.binary_location = binary_path
         
         try:
-            if importlib.util.find_spec("webdriver_manager") is not None:
-                from webdriver_manager.microsoft import EdgeChromiumDriverManager
-                from selenium.webdriver.edge.service import Service as EdgeService
-                service = EdgeService(EdgeChromiumDriverManager().install())
-                return webdriver.Edge(service=service, options=edge_options)
-            else:
-                return webdriver.Edge(options=edge_options)
-        except ImportError:
-            return webdriver.Edge(options=edge_options)
+            return webdriver.Edge(
+                options=edge_options,
+                **preinstalled_selenium_driver_kwargs("edge"),
+            )
         except Exception as e:
             self.log(f"⚠️ 建立 Edge Driver 失敗: {e}")
-            return webdriver.Edge(options=edge_options)
+            return webdriver.Edge(
+                options=edge_options,
+                **preinstalled_selenium_driver_kwargs("edge"),
+            )
     
 
     def _get_captcha_image(self) -> np.ndarray:

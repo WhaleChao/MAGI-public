@@ -8,6 +8,7 @@ from magi_v3.business_recovery import audit_recovery_catalog, decide_recovery
 from skills.ops.cron_command_identity import command_definition_sha256
 from skills.ops import cron_scheduler as scheduler_module
 from skills.ops.cron_result_policy import (
+    classify_cron_result,
     legacy_candidate_rejection_reason,
     terminal_schedule_deferral_reason,
 )
@@ -110,6 +111,41 @@ def test_false_timeout_field_does_not_mislabel_business_failure() -> None:
     assert decision.retryable is True
     assert decision.human_required is False
     assert decision.reason_code == "business_failure"
+
+
+def test_final_partial_success_receipt_outranks_caught_item_traceback() -> None:
+    """A handled per-case traceback must not exhaust the whole cron owner."""
+
+    classified = classify_cron_result(
+        0,
+        json.dumps(
+            {
+                "success": True,
+                "status": "partial_retry_pending",
+                "partial": True,
+                "retryable": True,
+                "retry_pending_cases_count": 6,
+                "failed_cases_count": 0,
+                "rename_timed_out": False,
+            }
+        ),
+        "Traceback (most recent call last):\nhandled portal item timeout",
+    )
+
+    assert classified.success is True
+    assert classified.status == "success"
+    assert classified.returncode == 0
+
+
+def test_unhandled_traceback_without_final_success_receipt_still_fails() -> None:
+    classified = classify_cron_result(
+        0,
+        "diagnostic output only",
+        "Traceback (most recent call last):\nFatal error",
+    )
+
+    assert classified.success is False
+    assert classified.status == "failed"
 
 
 def test_topology_transition_is_excluded_from_generic_retry() -> None:

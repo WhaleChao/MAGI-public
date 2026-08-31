@@ -38,6 +38,10 @@ from scripts.v3_validation.route_certification import (
     runtime_binding_from_environment,
 )
 from scripts.v3_validation.side_effects import SIDE_EFFECT_CLASSES, evaluate_side_effect
+from magi_v3.external_inputs import (
+    NAMED_MUTABLE_STATE_BINDINGS,
+    live_shared_state_environment,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -45,6 +49,11 @@ MANIFEST_PATH = ROOT / "config" / "v3_release_quality_suites.json"
 FIXTURE = ROOT / "tests" / "v3" / "compat" / "behavior_fixtures" / "osc-file-content.json"
 EVIDENCE_PREFIX = "MAGI_V3_OFFLINE_EVIDENCE="
 SEATBELT_CHILD_ENV = "MAGI_V3_RELEASE_QUALITY_SEATBELT_CHILD"
+CAMPAIGN_TEMP_ROOT = (
+    Path("/private/tmp/magi-v3-campaign")
+    if Path("/private/tmp").is_dir()
+    else Path(tempfile.gettempdir()) / "magi-v3-campaign"
+)
 V2_COMPAT_ENV_ALLOWLIST = (
     "HOME",
     "LANG",
@@ -60,6 +69,7 @@ V2_COMPAT_ENV_ALLOWLIST = (
     SEATBELT_CHILD_ENV,
     "PATH",
     "PYTHONDONTWRITEBYTECODE",
+    "PYTHONPYCACHEPREFIX",
     "PYTEST_DISABLE_PLUGIN_AUTOLOAD",
     "TMPDIR",
 )
@@ -103,6 +113,7 @@ V3_FORMAL_ENV_ALLOWLIST = (
     "MAGI_V3_RELEASE_ID",
     "MAGI_V3_RELEASE_MANIFEST",
     "MAGI_V3_RELEASE_MANIFEST_SHA256",
+    SEATBELT_CHILD_ENV,
     "MAGI_V3_REPLAY_START_LOCAL",
     "MAGI_V3_SERVICE_MANIFEST",
     "MAGI_V3_SERVICE_MANIFEST_SHA256",
@@ -122,6 +133,45 @@ V2_COMPAT_NODE_CANDIDATES = (
 
 class ReleaseQualityCertificationError(RuntimeError):
     pass
+
+
+def _formal_mutable_environment(shared_root: Path) -> dict[str, str]:
+    """Bind every sealed mutable-state path to one disposable shared root."""
+
+    shared = shared_root.resolve(strict=False)
+    values = live_shared_state_environment(shared)
+    values.update(
+        {
+            env_name: str(shared / relative)
+            for env_name, (_binding_name, relative) in
+            NAMED_MUTABLE_STATE_BINDINGS.items()
+        }
+    )
+    return values
+
+
+def _prepare_campaign_temp_root() -> Path:
+    """Ensure the runner's compact disposable namespace exists before Seatbelt."""
+
+    root = CAMPAIGN_TEMP_ROOT
+    if root.is_symlink():
+        raise ReleaseQualityCertificationError(
+            "campaign temporary root must not be a symlink"
+        )
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    metadata = root.stat()
+    if metadata.st_uid != os.getuid():
+        raise ReleaseQualityCertificationError(
+            "campaign temporary root is not user-owned"
+        )
+    if stat.S_IMODE(metadata.st_mode) != 0o700:
+        root.chmod(0o700)
+        metadata = root.stat()
+    if stat.S_IMODE(metadata.st_mode) != 0o700:
+        raise ReleaseQualityCertificationError(
+            "campaign temporary root permissions are unsafe"
+        )
+    return root
 
 
 def _sha256(path: Path) -> str:
@@ -160,7 +210,9 @@ def _isolated_roots(
         raise ReleaseQualityCertificationError("pytest HOME is not isolated from live MAGI")
     if not resolved_workspace.is_relative_to(temporary):
         raise ReleaseQualityCertificationError("pytest workspace is outside bound TMPDIR")
-    return tuple(dict.fromkeys((resolved_workspace, temporary, home)))
+    return tuple(
+        dict.fromkeys((resolved_workspace, temporary, home, CAMPAIGN_TEMP_ROOT))
+    )
 
 
 def _live_mutable_read_roots(real_home: Path) -> tuple[Path, ...]:
@@ -297,6 +349,8 @@ def _transcript_run(
             )
         env = {name: env[name] for name in V3_FORMAL_ENV_ALLOWLIST if name in env}
         sandbox = workspace / "v3-test-state"
+        shared = sandbox / "shared"
+        env.update(_formal_mutable_environment(shared))
         env.update(
             {
                 "HOME": str(workspace / "home"),
@@ -321,11 +375,11 @@ def _transcript_run(
                 "MAGI_OSC_FILE_SHARE_CACHE_DIR": str(sandbox / "osc-share-cache"),
                 "MAGI_OSC_PREVIEW_CACHE_DIR": str(sandbox / "paperclip-preview"),
                 "MAGI_OSC_UPLOAD_CACHE_DIR": str(sandbox / "paperclip-uploads"),
-                "MAGI_SHARED_STATE_DIR": str(sandbox / "shared"),
-                "MAGI_V3_SHARED_STATE_DIR": str(sandbox / "shared"),
+                "MAGI_SHARED_STATE_DIR": str(shared),
+                "MAGI_V3_SHARED_STATE_DIR": str(shared),
                 "MAGI_V3_STATE_DIR": str(sandbox / "state"),
                 "MAGI_PDF_NAMER_CASE_INDEX": str(
-                    sandbox / "shared" / "pdf-namer" / "_case_index.json"
+                    shared / "pdf-namer" / "_case_index.json"
                 ),
             }
         )
@@ -340,6 +394,7 @@ def _transcript_run(
         env["PYTHONPATH"] = _pytest_pythonpath()
     env["MAGI_V3_PYTEST_TRANSCRIPT"] = str(transcript)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env["PYTHONPYCACHEPREFIX"] = "/dev/null"
     env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
     pytest_command = [
         sys.executable,
@@ -662,6 +717,7 @@ def _side_effect_snapshot() -> dict[str, Any]:
 def run_certification(workspace: Path) -> dict[str, Any]:
     if os.environ.get("MAGI_V3_OFFLINE_CERTIFICATION") != "1":
         raise ReleaseQualityCertificationError("offline certification guard is required")
+    _prepare_campaign_temp_root()
     manifest_payload, release_files, release_manifest_sha = _release_files()
     expected_runtime_sha = os.environ.get("MAGI_V3_PYTHON_RUNTIME_SHA256", "")
     runtime = Path(sys.executable)
@@ -816,6 +872,7 @@ def _run_seatbelt_child() -> int:
     """Re-exec the complete producer under one inherited Seatbelt profile."""
 
     temporary = Path(os.environ.get("TMPDIR", "")).resolve(strict=True)
+    _prepare_campaign_temp_root()
     env = dict(os.environ)
     env[SEATBELT_CHILD_ENV] = "1"
     with tempfile.TemporaryDirectory(
@@ -835,6 +892,7 @@ def _run_seatbelt_child() -> int:
                 for name, relative in FORMAL_PRODUCER_STATE_PATHS.items()
             }
         )
+        env.update(_formal_mutable_environment(producer_state / "shared"))
         env["HOME"] = str(producer_home)
         env["TMPDIR"] = str(producer_temporary)
         env["MAGI_WEBSITE_ROOT"] = str(staged_website)
@@ -870,7 +928,7 @@ def _run_seatbelt_child() -> int:
             continue
         error = payload.get("error") if isinstance(payload, dict) else None
         if payload.get("ok") is False and isinstance(error, str) and error.strip():
-            child_error = error.strip()[:1000]
+            child_error = error.strip()[:8000]
             break
     print(
         json.dumps(

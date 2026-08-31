@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from scripts import public_release_audit as release_audit
 from scripts import v3_release_bundle as bundle
 
 
@@ -55,6 +56,32 @@ def _privacy_entry(tmp_path: Path, relative: str, content: str) -> tuple[Path, b
     path = source / relative
     _write(path, content)
     return source, bundle._entry_from_file(source.resolve(), path, Path(relative))
+
+
+def test_public_audit_distinguishes_mysql_flag_check_from_inline_secret() -> None:
+    flag_check = 'if "-' + 'p" not in command or "no:cacheprovider" not in command: pass'
+    assert release_audit.scan_text("scripts/guard.py", flag_check) == []
+
+    finding = release_audit.scan_text(
+        "scripts/unsafe.sh", "mysql -p'" + "not-a-real-password' database"
+    )
+    assert [item.kind for item in finding] == ["mysql_cli_password"]
+
+
+def test_public_audit_allows_only_official_document_number_context() -> None:
+    official = (
+        '經濟部 97 年經商字第 ' + '097020' + '6942 號函；'
+        '財政部台財稅字第\\n ' + '092045' + '5616 號令'
+    )
+    assert release_audit.scan_text(
+        "static/exam_tutor/essay_bank.json", official
+    ) == []
+
+    finding = release_audit.scan_text(
+        "static/exam_tutor/essay_bank.json",
+        official + "；聯絡電話 " + "091234" + "5678",
+    )
+    assert [item.kind for item in finding] == ["taiwan_mobile"]
 
 
 def test_office_validation_cli_survives_v3_python_safe_path(tmp_path: Path) -> None:
@@ -186,6 +213,10 @@ def _source_tree(tmp_path: Path, *, initialize_git: bool = True) -> Path:
     _write(source / "daemon.py", "# import compatibility sentinel; never executed by V3\n")
     _write(source / "requirements.txt", "flask\n")
     _write(source / "requirements-optional.txt", "\n")
+    _write(
+        source / "requirements-melchior-launch-intent.txt",
+        "cryptography==50.0.0 --hash=sha256:" + "0" * 64 + "\n",
+    )
     _write(source / "pyproject.toml", "[project]\nname='magi-v3-test'\n")
     for name in ("datastores", "holidays_config", "models", "nodes", "services"):
         _write(source / "json" / f"{name}.json", "{}\n")
@@ -287,6 +318,12 @@ def test_bundle_contains_only_allowlisted_verified_files_and_atomic_marker(
     assert "bin/magi-v3-python" in paths
     assert ".env.example" in paths
     assert "requirements-selfhost.txt" in paths
+    assert "requirements-melchior-launch-intent.txt" in paths
+    assert hashlib.sha256(
+        (staging / "requirements-melchior-launch-intent.txt").read_bytes()
+    ).hexdigest() == hashlib.sha256(
+        (source / "requirements-melchior-launch-intent.txt").read_bytes()
+    ).hexdigest()
     assert "install-magi.cmd" in paths
     assert "install-magi.command" in paths
     assert "install-magi.ps1" in paths
@@ -450,9 +487,36 @@ def test_release_quality_targets_are_part_of_the_bundle_allowlist() -> None:
     )
 
 
+def test_active_test_matrix_targets_are_part_of_the_bundle_allowlist() -> None:
+    matrix = json.loads(
+        (ROOT / "config/test_matrix.json").read_text(encoding="utf-8")
+    )
+
+    def strings(value):
+        if isinstance(value, str):
+            yield value
+        elif isinstance(value, list):
+            for item in value:
+                yield from strings(item)
+        elif isinstance(value, dict):
+            for item in value.values():
+                yield from strings(item)
+
+    targets = {value for value in strings(matrix) if value.startswith("tests/")}
+    assert targets
+    assert all(
+        target.startswith("tests/v3/")
+        or target.startswith("tests/support/")
+        or target in bundle.REQUIRED_TEST_TARGETS
+        for target in targets
+    )
+
+
 def test_agent_gateway_stdio_launcher_is_a_sealed_release_surface() -> None:
     assert "bin/agent_mcp.py" in bundle.REQUIRED_PACKAGE_FILES
     assert bundle._excluded(Path("bin/agent_mcp.py")) is False
+
+
 @pytest.mark.parametrize(
     "literal",
     [
@@ -497,6 +561,25 @@ def test_privacy_audit_does_not_exempt_private_paths_in_cutover_contract(
 
     with pytest.raises(bundle.ReleaseBundleError, match="private workstation path"):
         bundle._release_privacy_audit(source, (entry,))
+
+
+def test_whale_tailnet_installer_has_no_complete_workstation_path_literal() -> None:
+    relative = Path(
+        "scripts/melchior_federation/windows_tailnet_serve_installer.py"
+    )
+    entry = bundle._entry_from_file(ROOT, ROOT / relative, relative)
+
+    evidence = bundle._release_privacy_audit(ROOT, (entry,))
+
+    assert evidence["raw_hits"] == 0
+    assert evidence["reviewed_non_sensitive_compat_hits"] == 0
+
+
+def test_current_release_source_passes_privacy_literal_inventory() -> None:
+    evidence = bundle._release_privacy_audit(ROOT, bundle.snapshot_sources(ROOT))
+
+    assert evidence["status"] == "passed"
+    assert evidence["raw_hits"] >= evidence["synthetic_fixture_hits"]
 
 
 def test_privacy_evidence_splits_synthetic_and_reviewed_hits_without_content(

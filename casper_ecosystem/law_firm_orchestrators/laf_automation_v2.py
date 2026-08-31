@@ -77,7 +77,12 @@ from api.laf_closing_transfer import (
     parse_laf_closing_transfer_notice,
 )
 from api.osc.case_defaults import db_settings_getter, normalize_case_lawyer
-from skills.engine.legal_web_adapter import format_legal_web_engine_log, resolve_legal_web_engine
+from skills.engine.legal_web_adapter import (
+    format_legal_web_engine_log,
+    legal_web_allowed_hosts,
+    preinstalled_selenium_driver_kwargs,
+    resolve_legal_web_engine,
+)
 
 
 def _safe_print(*args, **kwargs) -> None:
@@ -1736,6 +1741,9 @@ class LAFWebAutomation:
             headless=self.headless,
             download_dir=dl_path,
             page_load_timeout=60.0,
+            allowed_navigation_hosts=list(
+                legal_web_allowed_hosts(self.web_engine_profile, extra_urls=(self.base_url,))
+            ),
         )
         self.log("✅ Playwright Chromium 初始化成功（共用 factory）")
         return driver
@@ -1867,7 +1875,6 @@ class LAFWebAutomation:
         
         # 基本參數（Chrome 147+ session 穩定性修正）
         chrome_options.add_argument('--disable-gpu')
-        chrome_options.add_argument('--no-sandbox')
         chrome_options.add_argument('--disable-dev-shm-usage')
         chrome_options.add_argument('--window-size=1920,1080')
         chrome_options.add_argument('--disable-popup-blocking')
@@ -1886,19 +1893,10 @@ class LAFWebAutomation:
             chrome_options.binary_location = binary_path
         
         try:
-            _FORCE_CD_VERSION = os.environ.get("MAGI_CHROMEDRIVER_VERSION", "147.0.7727.57").strip()
-            if importlib.util.find_spec("webdriver_manager") is not None:
-                from webdriver_manager.chrome import ChromeDriverManager
-                from selenium.webdriver.chrome.service import Service
-                try:
-                    service = Service(ChromeDriverManager(driver_version=_FORCE_CD_VERSION).install())
-                except Exception:
-                    service = Service(ChromeDriverManager().install())
-                return webdriver.Chrome(service=service, options=chrome_options)
-            else:
-                 return webdriver.Chrome(options=chrome_options)
-        except ImportError:
-            return webdriver.Chrome(options=chrome_options)
+            return webdriver.Chrome(
+                options=chrome_options,
+                **preinstalled_selenium_driver_kwargs("chrome"),
+            )
         except Exception as e:
             self.log(f"⚠️ 建立 Chrome Driver 失敗: {e}")
             if getattr(self, "browser_profile_dir", ""):
@@ -1909,7 +1907,10 @@ class LAFWebAutomation:
                     return self._create_chrome_driver(binary_path)
                 finally:
                     self.browser_profile_dir = old_profile
-            return webdriver.Chrome(options=chrome_options)
+            return webdriver.Chrome(
+                options=chrome_options,
+                **preinstalled_selenium_driver_kwargs("chrome"),
+            )
     
     def _create_edge_driver(self, binary_path: str = None):
         """建立 Edge WebDriver (含反偵測措施)"""
@@ -1955,7 +1956,6 @@ class LAFWebAutomation:
         
         # 基本參數
         edge_options.add_argument('--disable-gpu')
-        edge_options.add_argument('--no-sandbox')
         edge_options.add_argument('--disable-dev-shm-usage')
         edge_options.add_argument('--window-size=1920,1080')
         
@@ -1971,18 +1971,16 @@ class LAFWebAutomation:
              edge_options.binary_location = binary_path
         
         try:
-            if importlib.util.find_spec("webdriver_manager") is not None:
-                from webdriver_manager.microsoft import EdgeChromiumDriverManager
-                from selenium.webdriver.edge.service import Service as EdgeService
-                service = EdgeService(EdgeChromiumDriverManager().install())
-                return webdriver.Edge(service=service, options=edge_options)
-            else:
-                return webdriver.Edge(options=edge_options)
-        except ImportError:
-            return webdriver.Edge(options=edge_options)
+            return webdriver.Edge(
+                options=edge_options,
+                **preinstalled_selenium_driver_kwargs("edge"),
+            )
         except Exception as e:
             self.log(f"⚠️ 建立 Edge Driver 失敗: {e}")
-            return webdriver.Edge(options=edge_options)
+            return webdriver.Edge(
+                options=edge_options,
+                **preinstalled_selenium_driver_kwargs("edge"),
+            )
     
 
     def _get_captcha_image_playwright(self) -> "np.ndarray":

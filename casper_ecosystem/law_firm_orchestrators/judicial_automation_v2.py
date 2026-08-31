@@ -43,7 +43,12 @@ if str(_MAGI_ROOT) not in sys.path:
 
 from api.case_path_mapper import local_case_path_candidates, translate_case_path_to_local
 from api.runtime_paths import get_env_file, get_transcript_download_dir
-from skills.engine.legal_web_adapter import format_legal_web_engine_log, resolve_legal_web_engine
+from skills.engine.legal_web_adapter import (
+    format_legal_web_engine_log,
+    legal_web_allowed_hosts,
+    preinstalled_selenium_driver_kwargs,
+    resolve_legal_web_engine,
+)
 
 
 def _safe_print(*args, **kwargs) -> None:
@@ -918,6 +923,9 @@ class LawyerSSO:
                     headless=self.headless,
                     download_dir=dl_dir,
                     page_load_timeout=page_timeout,
+                    allowed_navigation_hosts=list(
+                        legal_web_allowed_hosts(self.web_engine_profile, extra_urls=(self.LOGIN_URL,))
+                    ),
                 )
                 self.log("✅ Playwright Chromium 初始化成功（筆錄模組）")
                 return
@@ -942,7 +950,6 @@ class LawyerSSO:
         if self.headless:
             options.add_argument('--headless=new')
 
-        options.add_argument('--no-sandbox')
         options.add_argument('--disable-dev-shm-usage')
         options.add_argument('--disable-gpu')
         options.add_argument('--window-size=1920,1080')
@@ -959,7 +966,10 @@ class LawyerSSO:
         }
         options.add_experimental_option("prefs", prefs)
 
-        self.driver = webdriver.Chrome(options=options)
+        self.driver = webdriver.Chrome(
+            options=options,
+            **preinstalled_selenium_driver_kwargs("chrome"),
+        )
 
         try:
             page_timeout = int(os.environ.get("MAGI_SELENIUM_PAGELOAD_TIMEOUT_SEC", "45") or "45")
@@ -1506,6 +1516,12 @@ class CourtRecordDownloader:
                     headless=self.headless,
                     download_dir=self.download_folder,
                     page_load_timeout=page_timeout,
+                    allowed_navigation_hosts=list(
+                        legal_web_allowed_hosts(
+                            self.web_engine_profile,
+                            extra_urls=(self.LOGIN_URL, self.SEARCH_URL),
+                        )
+                    ),
                 )
                 self.log("✅ Playwright Chromium 初始化成功（筆錄 CourtRecordDownloader）")
                 # 初始化驗證碼識別器
@@ -1544,7 +1560,6 @@ class CourtRecordDownloader:
         options.add_argument('--disable-blink-features=AutomationControlled')
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option('useAutomationExtension', False)
-        options.add_argument('--no-sandbox')
         options.add_argument('--disable-dev-shm-usage')
         options.add_argument('--disable-gpu')
         options.add_argument('--window-size=1280,800')
@@ -1557,7 +1572,10 @@ class CourtRecordDownloader:
         }
         options.add_experimental_option("prefs", prefs)
 
-        self.driver = webdriver.Chrome(options=options)
+        self.driver = webdriver.Chrome(
+            options=options,
+            **preinstalled_selenium_driver_kwargs("chrome"),
+        )
         self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
         try:
             # Headless Chrome sometimes ignores download.default_directory for

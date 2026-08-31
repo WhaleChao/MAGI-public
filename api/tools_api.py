@@ -266,9 +266,7 @@ from skills.research.web_research import search_web, research_topic, fetch_url_c
 from skills.evolution.skill_genesis import list_skills, generate_skill
 from skills.overlay import effective_definitions_path, runtime_skill_dir, skill_roots
 from skills.bridge.melchior_bridge import analyze_image
-from skills.bridge.inference_gateway import InferenceGateway
 from skills.bridge.balthasar_bridge import summarize_text, check_health as balthasar_health
-from skills.bridge.melchior_manager import sync_skills_to_melchior, melchior_health
 try:
     from api.tw_output_guard import normalize_output_text as _normalize_output_text
 except Exception:
@@ -396,6 +394,13 @@ except ImportError as e:
         return f
     def is_admin(user=None):
         return False
+
+# Narrow, identity-bound Agent Gateway for Goose/OpenHands/Codex/Cline.  This
+# is registered beside the legacy Tools API but deliberately does not expose
+# the legacy skill registry or raw shell/database endpoints.
+from api.agentic.http_gateway import agent_gateway_bp
+
+app.register_blueprint(agent_gateway_bp)
 
 # static_exports route — must be defined AFTER require_api_key is available
 @app.route("/static/exports/<path:filename>", methods=["GET"])
@@ -814,7 +819,7 @@ def _run_with_timeout(fn, wait_sec: int, *args, pool=None, **kwargs):
 
 
 _OSC_ORCHESTRATOR = None
-_INFERENCE_GATEWAY = InferenceGateway()
+_OSC_ORCHESTRATOR_OWNER_MARKER = None
 _EXTERNAL_KEY_CACHE = {"ts": 0.0, "value": ""}
 _SUMMARIZE_CB_LOCK = threading.Lock()
 
@@ -882,11 +887,47 @@ _SUMMARIZE_CB = {
 
 
 def _get_osc_orchestrator():
-    global _OSC_ORCHESTRATOR
-    if _OSC_ORCHESTRATOR is None:
+    global _OSC_ORCHESTRATOR, _OSC_ORCHESTRATOR_OWNER_MARKER
+    from magi_v3.federation.owner_registry import owner_marker, resolve_orchestrator
+    marker = owner_marker()
+    if _OSC_ORCHESTRATOR is None or _OSC_ORCHESTRATOR_OWNER_MARKER != marker:
         from api.orchestrator import Orchestrator  # Lazy import: reduce startup coupling
-        _OSC_ORCHESTRATOR = Orchestrator()
+        _OSC_ORCHESTRATOR = resolve_orchestrator(Orchestrator)
+        _OSC_ORCHESTRATOR_OWNER_MARKER = marker
     return _OSC_ORCHESTRATOR
+
+
+def _get_authoritative_inference_gateway():
+    gateway = getattr(_get_osc_orchestrator(), "_inference_gw", None)
+    if gateway is None:
+        raise RuntimeError("authoritative inference gateway is unavailable")
+    return gateway
+
+
+def _melchior_inert_status() -> dict:
+    """Return owner-aware status without probing any legacy remote endpoint."""
+    try:
+        gateway = _get_authoritative_inference_gateway()
+        adapter = getattr(gateway, "federated_adapter", None)
+        dispatcher = getattr(adapter, "dispatcher", None) if adapter is not None else None
+        remote_enabled = bool(
+            dispatcher is not None and getattr(dispatcher, "remote_enabled", False)
+        )
+        return {
+            "online": remote_enabled,
+            "mode": "remote_stateless" if remote_enabled else "local_only",
+            "protocol": "magi.stateless-inference/v1",
+            "remote_probe": False,
+            "models": [],
+        }
+    except Exception:
+        return {
+            "online": False,
+            "mode": "local_only",
+            "protocol": "magi.stateless-inference/v1",
+            "remote_probe": False,
+            "models": [],
+        }
 
 
 def _summarize_cb_enabled() -> bool:
@@ -1217,11 +1258,12 @@ def _tools_health_snapshot(*, fresh: bool = False) -> dict:
         "1", "true", "yes", "on",
     }
     if model_required:
-        model_base = str(
+        from api.routing.local_endpoint import loopback_base_url
+        model_base = loopback_base_url(str(
             os.environ.get("MAGI_OMLX_CHAT_URL")
             or os.environ.get("MAGI_OMLX_BASE")
             or "http://127.0.0.1:8080"
-        ).rstrip("/")
+        ))
         model_url = f"{model_base}/models" if model_base.endswith("/v1") else f"{model_base}/v1/models"
         try:
             from skills.bridge.http_pool import get_session as _get_session
@@ -1420,14 +1462,6 @@ def _external_osc_chat_inner():
             mode = str(get_brain_mode() or "unknown").strip().lower()
         except Exception:
             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 732, exc_info=True)
-        try:
-            from skills.bridge.melchior_manager import get_melchior_runtime_status
-            rt = get_melchior_runtime_status() or {}
-            models = rt.get("models") if isinstance(rt.get("models"), list) else []
-            if models:
-                active = str(models[0]).strip() or active
-        except Exception:
-            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 740, exc_info=True)
         mode_note = "本地 oMLX 推理"
         quick = (
             f"目標主模型：{target_main}\n"
@@ -1768,29 +1802,10 @@ def connections_status():
 @app.route('/sages', methods=['GET'])
 def sages_status():
     """Returns status of all MAGI sages."""
-    from skills.bridge.http_pool import get_session as _get_session
-
     casper_health = _tools_health_snapshot()
 
-    # Check Melchior (via /v1/models API)
-    try:
-        from api.routing.node_registry import get_node_ip
-        melchior_host = os.environ.get("MELCHIOR_HOST") or get_node_ip("melchior") or ""
-    except Exception:
-        melchior_host = os.environ.get("MELCHIOR_HOST", "")
-    melchior_api_port = os.environ.get("MELCHIOR_API_PORT", "8080")
-    try:
-        if not melchior_host:
-            raise RuntimeError("MELCHIOR_HOST is not configured")
-        r = _get_session().get(f"http://{melchior_host}:{melchior_api_port}/v1/models", timeout=3)
-        if r.status_code == 200:
-            data = r.json().get("data", [])
-            model_names = [m.get("id", "") for m in data[:3]]
-            melchior = {"online": True, "role": "Scientist (Vision/Code)", "gpu": "RTX 3060", "models": model_names}
-        else:
-            melchior = {"online": False, "role": "Scientist (Vision/Code)", "gpu": "RTX 3060"}
-    except Exception:
-        melchior = {"online": False, "role": "Scientist (Vision/Code)", "gpu": "RTX 3060"}
+    melchior = _melchior_inert_status()
+    melchior["role"] = "Stateless inference worker"
     
     # Balthasar: council-only node; daily service is proxied by Casper.
     b_status, b_msg = balthasar_health()
@@ -2029,7 +2044,7 @@ def api_vision():
     # ── end Phase G ──────────────────────────────────────────────────────────
 
     try:
-        result = _INFERENCE_GATEWAY.vision(
+        result = _get_authoritative_inference_gateway().vision(
             image_path=image_path,
             prompt=str(prompt or "").strip() or "Describe this image in detail",
             timeout=max(8, int(timeout_sec)),
@@ -2041,9 +2056,7 @@ def api_vision():
         result = {"success": False, "error": f"vision_gateway_exception: {e}"}
 
     if not result.get("success"):
-        # KEEP: Last-resort vision fallback via melchior_bridge.analyze_image().
-        # Not a separate endpoint -- inline resilience when vision_gateway fails.
-        # Provides degraded-mode results rather than returning an error to callers.
+        # Last-resort fallback is explicitly Mac-local and never probes MELCHIOR.
         fb_ok, fb_val = _run_with_timeout(analyze_image, 60, image_path, prompt)
         description = fb_val if fb_ok else None
         result = {
@@ -2081,21 +2094,19 @@ def api_vision():
 # ============== MELCHIOR (Remote Enhancement) ==============
 @app.route('/melchior/health', methods=['GET'])
 def api_melchior_health():
-    """Melchior health summary."""
-    return jsonify(melchior_health()), 200
+    """Owner-aware status with no legacy endpoint probe."""
+    return jsonify(_melchior_inert_status()), 200
 
 
 @app.route('/melchior/skills/sync', methods=['POST'])
 @require_api_key
 def api_melchior_sync_skills():
-    """Push current skills bundle to Melchior (/api/skills/sync on Melchior)."""
-    data = request.get_json() or {}
-    skills_dir = data.get("skills_dir", f"{_MAGI_ROOT}/skills")
-    mode = (data.get("mode") or "").strip().lower()  # auto|delta|full
-    force = _to_bool(data.get("force", False), False)
-    smoke_test = _to_bool(data.get("smoke_test", True), True)
-    result = sync_skills_to_melchior(skills_dir, mode=mode, force=force, smoke_test=smoke_test)
-    return jsonify(result), (200 if result.get("success") else 500)
+    """Remote mutation is permanently archived; MELCHIOR is inference-only."""
+    return jsonify({
+        "success": False,
+        "archived": True,
+        "error": "remote skill sync is permanently archived; MELCHIOR is inference-only",
+    }), 410
 
 # ============== BALTHASAR (摘要) ==============
 @app.route('/summarize', methods=['POST'])
@@ -2565,7 +2576,7 @@ def api_shortcut_ocr():
         # ── end Phase G ──────────────────────────────────────────────────────
 
         try:
-            result = _INFERENCE_GATEWAY.vision(
+            result = _get_authoritative_inference_gateway().vision(
                 image_path=tmp_path,
                 prompt="請將影像中的文字完整辨識出來，保留原始排版。",
                 timeout=max(8, int(timeout_sec)),
@@ -3349,16 +3360,12 @@ def api_collab_translate():
 @app.route('/collab/music', methods=['POST'])
 @require_api_key
 def api_collab_music():
-    """Tri-sage music generation route (Melchior first, local fallback)."""
-    from skills.bridge.tri_sage_collab import generate_music
-    data = request.get_json() or {}
-    prompt = data.get("prompt", "")
-    duration_sec = int(data.get("duration_sec", 30))
-    if not prompt:
-        return jsonify({"error": "Missing 'prompt'"}), 400
-    result = generate_music(prompt, duration_sec=duration_sec)
-    result = _guard_payload_fields(result)
-    return jsonify(result), (200 if result.get("success") else 400)
+    """Legacy remote music execution is archived under inference-only policy."""
+    return jsonify({
+        "success": False,
+        "archived": True,
+        "error": "remote music execution is permanently archived; MELCHIOR is inference-only",
+    }), 410
 
 
 @app.route('/collab/chat', methods=['POST'])
@@ -3427,10 +3434,9 @@ def api_collab_chat():
             "route": "orchestrator_semantic_preflight_failed",
         }), 503
     primary_model = (data.get("model") or os.environ.get("MAGI_COLLAB_CHAT_MODEL") or TEXT_PRIMARY_MODEL).strip() or TEXT_PRIMARY_MODEL
-    # Use InferenceGateway — handles oMLX/Ollama/remote fallback internally
+    # Use the exact owner-resolved gateway; no second federation authority exists.
     try:
-        from skills.bridge.inference_gateway import InferenceGateway
-        _gw = InferenceGateway()
+        _gw = _get_authoritative_inference_gateway()
         result = _gw.chat(prompt, task_type="general", timeout=timeout_sec, model=primary_model)
     except Exception as _gw_err:
         result = {"success": False, "error": f"gateway_error: {_gw_err}", "route": "gateway_failed"}

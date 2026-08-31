@@ -222,6 +222,15 @@ def _source_trust_weight(source: str, query: str = "") -> float:
 
 
 def _rank_recall_results(query: str, results: list[dict]) -> list[dict]:
+    try:
+        from magi_v3.memory_lifecycle import filter_tombstoned_results
+
+        results = filter_tombstoned_results(list(results or []))
+    except Exception:
+        # The lifecycle sidecar is additive during RC643 migration.  A registry
+        # outage must not take down read-only legal recall; the health gate will
+        # report the missing consistency evidence separately.
+        logger.warning("Memory lifecycle tombstone filter unavailable", exc_info=True)
     ranked: list[dict] = []
     for item in results or []:
         if not isinstance(item, dict):
@@ -696,6 +705,22 @@ def _save_local_backup(content, source, embedding, is_synced):
     return False
 
 
+def _register_memory_lifecycle(content: str, source: str, metadata=None) -> str:
+    """Register MemoryRecord v2 metadata without storing content in the sidecar."""
+
+    try:
+        from magi_v3.memory_lifecycle import MemoryLifecycleStore
+
+        return MemoryLifecycleStore.from_env().register(
+            content,
+            source,
+            metadata=dict(metadata or {}),
+        ).memory_id
+    except Exception:
+        logger.warning("MemoryRecord v2 registration unavailable", exc_info=True)
+        return ""
+
+
 def _content_exists(cursor, content: str) -> bool:
     """Check if identical content already exists in documents table."""
     h = hashlib.md5(content.encode("utf-8", errors="replace")).hexdigest()
@@ -752,7 +777,10 @@ def remember(content, source="manual", metadata: Optional[dict] = None, embeddin
     safe_source = build_source_signature(str(source or "manual"), metadata=_metadata)[:250]
 
     if _keeper_offline():
-        return _save_local_backup(content, safe_source, embedding, is_synced=False)
+        stored = _save_local_backup(content, safe_source, embedding, is_synced=False)
+        if stored:
+            _register_memory_lifecycle(content, safe_source, _metadata)
+        return stored
 
     try:
         conn = _get_conn()
@@ -763,6 +791,7 @@ def remember(content, source="manual", metadata: Optional[dict] = None, embeddin
             logger.debug("Skipped duplicate content (source=%s)", safe_source[:60])
             cursor.close()
             conn.close()
+            _register_memory_lifecycle(content, safe_source, _metadata)
             return True
 
         cursor.execute(
@@ -788,15 +817,22 @@ def remember(content, source="manual", metadata: Optional[dict] = None, embeddin
             except Exception:
                 logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 455, exc_info=True)  # non-fatal
 
+        _register_memory_lifecycle(content, safe_source, _metadata)
         return True
 
     except mysql.connector.Error as e:
         _mark_keeper_offline(str(e)[:180])
-        return _save_local_backup(content, safe_source, embedding, is_synced=False)
+        stored = _save_local_backup(content, safe_source, embedding, is_synced=False)
+        if stored:
+            _register_memory_lifecycle(content, safe_source, _metadata)
+        return stored
 
     except Exception as e:
         logger.error(f"Remember error: {e}")
-        return _save_local_backup(content, safe_source, embedding, is_synced=False)
+        stored = _save_local_backup(content, safe_source, embedding, is_synced=False)
+        if stored:
+            _register_memory_lifecycle(content, safe_source, _metadata)
+        return stored
 
     finally:
         if "conn" in locals() and conn.is_connected():
@@ -866,6 +902,7 @@ def remember_batch(items):
             emb = embeddings[i] if i < len(embeddings) else _zero_embedding()
             if _save_local_backup(content, source, emb, is_synced=False):
                 inserted += 1
+                _register_memory_lifecycle(content, source, filtered_items[i].get("metadata"))
             else:
                 failed += 1
         return {"ok": failed == 0, "inserted": inserted, "failed": failed, "total": len(items)}
@@ -921,6 +958,10 @@ def remember_batch(items):
 
         conn.commit()
 
+        for i, (content, source) in enumerate(zip(texts, sources)):
+            if hashes[i] in existing_hashes:
+                _register_memory_lifecycle(content, source, filtered_items[i].get("metadata"))
+
         # Save FAISS index if we added anything
         if inserted > 0 and faiss_idx is not None:
             try:
@@ -939,6 +980,7 @@ def remember_batch(items):
             emb = embeddings[i] if i < len(embeddings) else _zero_embedding()
             if _save_local_backup(content, source, emb, is_synced=False):
                 inserted += 1
+                _register_memory_lifecycle(content, source, filtered_items[i].get("metadata"))
             else:
                 failed += 1
         return {"ok": False, "inserted": inserted, "failed": failed, "total": len(items), "fallback": "local"}
@@ -1565,10 +1607,26 @@ def recall(query, top_k=3, source_contains: str = "",
 
 
 def forget(query):
-    """
-    Deletes the strongest-matching memory safely.
-    """
-    return False, "Policy: forget/delete is disabled (no-delete requirement)."
+    """Create an exact-ID tombstone; never fuzzy-delete legal material."""
+
+    memory_id = str(query or "").strip().lower()
+    try:
+        from magi_v3.memory_lifecycle import MEMORY_ID_RE, MemoryLifecycleStore
+
+        if not MEMORY_ID_RE.fullmatch(memory_id):
+            return False, "請先查看記憶並提供完整 mem-... ID；MAGI 不接受模糊文字刪除。"
+        record = MemoryLifecycleStore.from_env().tombstone(
+            memory_id,
+            reason="user_requested_agent_memory_deletion",
+            actor="authenticated-user",
+        )
+        _RECALL_CACHE.clear()
+        return True, (
+            f"已建立記憶 tombstone：{record.memory_id}；已立即停止召回，"
+            "實體儲存與索引刪除將由一致性工作完成。正式卷證不受影響。"
+        )
+    except Exception as exc:
+        return False, f"記憶刪除未執行：{str(exc)[:240]}"
 
 
 if __name__ == "__main__":

@@ -1257,7 +1257,7 @@ def test_magi_v2_and_v3_registrations_are_unique_and_bound_to_the_skill() -> Non
         row for row in manifest["capabilities"] if row["id"] == "audio_transcription_translation"
     )
     assert transcription["worker_class"] == "transcription"
-    assert "skills/forensic-transcript-verifier/action.py" in transcription["v2_evidence"]
+    assert "skills/forensic-transcript-verifier/action.py" in transcription["implementation_evidence"]
     assert transcription["v3_worker_adapter"]["module"] == "magi_v3.forensic_transcript"
     factory, verifier = load_capability_worker_adapter("audio_transcription_translation")
     assert factory is build_worker_spec

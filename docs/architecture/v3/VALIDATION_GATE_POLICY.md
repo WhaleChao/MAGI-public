@@ -64,6 +64,29 @@ change scope 必須對應具體業務契約：
 任一不同即失效。cron occurrence、PID、lock、portal 登入、外部 API 回應、daily sample
 不得當成 formal reuse identity。
 
+### 4.1 共享外部資料的雙層收據
+
+共享外部資料的 payload 完整性與 release 身分必須分開驗證：
+
+- shared payload receipt 只證明共享目錄的來源、邏輯輸入與位元組雜湊；
+- deployment-local `static-external-release-receipt.json` 綁定候選 release、deployment、shared receipt 雜湊與目標 snapshot；
+- 新 release 不得改寫或「重綁定」上一個 active release 已驗證的 shared receipt；
+- pre-cutover 必須同時重驗 shared payload bytes 與 deployment-local binding，任一漂移即 fail closed。
+
+這使 r59 能保持不可變且可回滾，同時允許新候選版本使用內容相同的共享輸入，不會把「共享資料沒變」誤判成「舊 release 應被覆寫」。
+
+### 4.2 V3 到 V3 的原子切換與回滾演練
+
+RC643 後續版本只能用專用的 V3 rotation drill 產生 G27 證據：
+
+- 前版與候選版都必須是 immutable installed release，並由各自 hash-bound launcher 啟動；
+- 使用隔離 state root 與私有 active marker，連續三次驗證零 owner → 原子切換 → 候選冷重啟 → 前版冷回滾；
+- 生產 active marker、launchctl、production ports、真實業務狀態與網路全程唯讀或禁止存取；
+- 每次演練驗證單一 owner、durable SQLite sentinel、零遺失、零重複與 rollback RTO；
+- `legacy_v2_validation=disabled` 時，release gate 只接受單一、可重算的 V3 rotation raw report；舊 V2→V3／V3→V2 executor 僅保留為歷史工具，不能放行 active V3 promotion。
+
+因此 r59 不會被演練修改；它同時是正式切換失敗時保留的 immutable cold-rollback 目標。
+
 ## 5. 量化驗收
 
 - promotion 與 formal full 的重複 pytest node 必須為 0；

@@ -1225,6 +1225,12 @@ def _ensure_portal_probe_imports():
     raise ImportError("file_review_automation.py not found for portal probe")
 
 def _pip_install(pkgs):
+    if (os.environ.get("MAGI_V3_RELEASE_MANIFEST") or "").strip():
+        logger.error("runtime dependency install blocked in sealed release")
+        return False
+    if str(os.environ.get("MAGI_DEV_RUNTIME_INSTALLS") or "").strip().lower() not in {"1", "true", "yes", "on"}:
+        logger.error("runtime dependency install requires MAGI_DEV_RUNTIME_INSTALLS=1")
+        return False
     pkgs = [p for p in (pkgs or []) if (p or "").strip()]
     if not pkgs:
         return True
@@ -1273,8 +1279,11 @@ def _ensure_runtime_deps():
     """
     need = _missing_runtime_deps()
     if need:
-        logger.info("Installing missing deps (best-effort): %s", ", ".join(need))
-        _pip_install(need)
+        if not _pip_install(need):
+            raise RuntimeError(
+                "missing locked runtime dependencies: %s; rebuild the candidate runtime"
+                % ", ".join(need)
+            )
 
 def _json_path(name: str) -> str:
     """Resolve credential/token file under JSON_DIR if present."""
@@ -7600,6 +7609,82 @@ def _portal_payment_scan_chain(items: list, *, download_folder: str = "") -> dic
     }
 
 
+def _portal_pending_notification_fingerprint(item: dict) -> str:
+    """Return a stable, occurrence-scoped fingerprint for a pending payment.
+
+    The old portal notification state stored only the pending *count*. That
+    loses the identity of the work when one pending row is replaced by another
+    pending row, and it also cannot migrate an old state file safely. Bind the
+    state to the portal occurrence when available, while retaining the case,
+    deadline and fee so a changed payment request is treated as new work.
+    """
+    if not isinstance(item, dict):
+        return ""
+
+    def _first(*fields: str) -> str:
+        for field in fields:
+            value = str(item.get(field) or "").strip()
+            if value:
+                return value
+        return ""
+
+    occurrence = _first("payid", "p_payid", "pay_id", "rowid")
+    case_token = _normalize_case_token(
+        _first("court_case_no", "case_number", "showyyidno", "yyidno")
+    )
+    party_token = _normalize_case_token(_first("party", "client_name", "clnm"))
+    deadline = re.sub(r"\D", "", _first("pay_deadline", "deadline", "paylimitdt", "limitdt"))
+    fee = re.sub(r"\s+", "", _first("fee", "amount", "pay_amount", "p_amount"))
+    if not occurrence and not case_token and not party_token:
+        return ""
+
+    identity = "|".join(
+        (
+            f"occurrence={occurrence}",
+            f"case={case_token}",
+            f"party={party_token}",
+            f"deadline={deadline}",
+            f"fee={fee}",
+        )
+    )
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
+def _portal_pending_notification_fingerprints(items: Iterable[dict]) -> Set[str]:
+    """Build the de-duplicated identity set for the actionable notice queue."""
+    return {
+        fingerprint
+        for fingerprint in (
+            _portal_pending_notification_fingerprint(item) for item in (items or [])
+        )
+        if fingerprint
+    }
+
+
+def _portal_pending_state_changed(
+    current_fingerprints: Iterable[str],
+    previous_state: Optional[dict],
+    *,
+    current_count: int,
+) -> bool:
+    """Compare pending work by identity, with safe migration from count-only state."""
+    current = {str(value).strip() for value in (current_fingerprints or []) if str(value).strip()}
+    previous = previous_state if isinstance(previous_state, dict) else {}
+    stored = previous.get("portal_pending_fingerprints")
+    if isinstance(stored, list):
+        prior = {str(value).strip() for value in stored if str(value).strip()}
+        return current != prior
+
+    # Count-only state predates the identity binding. Any current actionable
+    # row is treated as new once so an existing ``portal_pending=1`` cannot
+    # permanently suppress the first identity-aware notification after rollout.
+    try:
+        previous_count = int(previous.get("portal_pending", -1))
+    except (TypeError, ValueError):
+        previous_count = -1
+    return bool(current) or int(current_count or 0) != previous_count
+
+
 def _should_emit_payment_check_notice(
     *,
     pay_hits: int,
@@ -7637,16 +7722,24 @@ def _save_portal_notify_state(
     portal_downloadable: int,
     portal_pickup: int,
     portal_pending: int,
+    portal_pending_fingerprints: Optional[Iterable[str]] = None,
 ) -> None:
     try:
         os.makedirs(os.path.dirname(state_path), exist_ok=True)
+        payload = {
+            "portal_downloadable": int(portal_downloadable or 0),
+            "portal_court_pickup": int(portal_pickup or 0),
+            "portal_pending": int(portal_pending or 0),
+            "notified_at": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+        }
+        if portal_pending_fingerprints is not None:
+            payload["portal_pending_fingerprints"] = sorted({
+                str(value).strip()
+                for value in portal_pending_fingerprints
+                if str(value).strip()
+            })
         with open(state_path, "w", encoding="utf-8") as _pf:
-            json.dump({
-                "portal_downloadable": int(portal_downloadable or 0),
-                "portal_court_pickup": int(portal_pickup or 0),
-                "portal_pending": int(portal_pending or 0),
-                "notified_at": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
-            }, _pf, ensure_ascii=False)
+            json.dump(payload, _pf, ensure_ascii=False)
     except Exception:
         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 2630, exc_info=True)
 
@@ -7840,6 +7933,8 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
             portal_pickup = int(portal_effective.get("court_pickup_count") or 0)
             portal_pickup_history = int(portal_effective.get("court_pickup_history_count") or 0)
             portal_pending = int(portal_effective.get("pending_payment_count") or 0)
+            portal_payment_due_count = 0
+            portal_pending_notice_items: list[dict] = []
             portal_download_receipt = portal_download_snapshot(
                 portal_effective.get("items") or []
             )
@@ -7896,6 +7991,7 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
                     urgent = groups.get("urgent", [])
                     unknown = groups.get("unknown", [])
                     portal_payment_due_count = len(overdue) + len(urgent) + len(unknown)
+                    portal_pending_notice_items = overdue + urgent + unknown
                     payment_lines.append(f"- 入口列表待繳費：{portal_payment_due_count} 件")
 
                     def _fmt_payment_items(items, limit=15):
@@ -7978,10 +8074,16 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
                 logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 2551, exc_info=True)
             _prev_downloadable = int(_portal_state_prev.get("portal_downloadable", -1))
             _prev_pickup = int(_portal_state_prev.get("portal_court_pickup", -1))
-            _prev_pending = int(_portal_state_prev.get("portal_pending", -1))
             _portal_downloadable_changed = (portal_downloadable != _prev_downloadable)
             _portal_pickup_changed = (portal_pickup != _prev_pickup)
-            _portal_pending_changed = (portal_pending != _prev_pending)
+            _portal_pending_fingerprints = _portal_pending_notification_fingerprints(
+                portal_pending_notice_items
+            )
+            _portal_pending_changed = _portal_pending_state_changed(
+                _portal_pending_fingerprints,
+                _portal_state_prev,
+                current_count=portal_payment_due_count,
+            )
             _portal_probe_ok = bool(portal_summary.get("success")) if with_portal and not portal_deferred else False
             _portal_failure_meta = (
                 {"failure_streak": 0, "should_alert": False, "error_key": ""}
@@ -7989,11 +8091,6 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
                 else _record_portal_probe_state(creds["download_folder"], portal_summary)
             )
             _portal_failure_alert = bool(_portal_failure_meta.get("should_alert"))
-            try:
-                portal_payment_due_count
-            except NameError:
-                portal_payment_due_count = 0
-
             payment_signal = _should_emit_payment_check_notice(
                 pay_hits=pay_hits,
                 pay_notified=pay_notified,
@@ -8117,7 +8214,11 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
                     # 讓下載器下輪仍可重試，直到真的下載並歸檔後才通知。
                     portal_downloadable=0,
                     portal_pickup=portal_pickup,
-                    portal_pending=portal_pending,
+                    # Persist the actionable queue count and identity set, not
+                    # the raw OLA pending count. This makes equal-count case
+                    # replacement and post-migration notifications observable.
+                    portal_pending=portal_payment_due_count,
+                    portal_pending_fingerprints=_portal_pending_fingerprints,
                 )
             out = {
                 "success": True,
@@ -8488,6 +8589,10 @@ def cmd_downloadable_probe(days: int = 30, notify: bool = False,
                 **portal_download_receipt,
                 "items_total": len(effective_items),
                 "error": portal_r.get("error") if not bool(portal_r.get("success")) else "",
+                "error_code": portal_r.get("error_code") if not bool(portal_r.get("success")) else "",
+                "error_detail_present": bool(portal_r.get("error_detail")) if not bool(portal_r.get("success")) else False,
+                "error_detail_sha256": hashlib.sha256(str(portal_r.get("error_detail") or "").encode("utf-8")).hexdigest() if not bool(portal_r.get("success")) and portal_r.get("error_detail") else "",
+                "attempts": int(portal_r.get("attempts") or 0),
                 "probe_module": str(portal_r.get("probe_module") or ""),
                 "dump_raw_items": portal_r.get("dump_raw_items"),
             },
@@ -8521,6 +8626,10 @@ def cmd_downloadable_probe(days: int = 30, notify: bool = False,
                 "court_pickup_count": int(portal_r.get("court_pickup_count") or 0),
                 "pending_payment_count": int(portal_r.get("pending_payment_count") or 0),
                 "error": portal_r.get("error") if not bool(portal_r.get("success")) else "",
+                "error_code": portal_r.get("error_code") if not bool(portal_r.get("success")) else "",
+                "error_detail_present": bool(portal_r.get("error_detail")) if not bool(portal_r.get("success")) else False,
+                "error_detail_sha256": hashlib.sha256(str(portal_r.get("error_detail") or "").encode("utf-8")).hexdigest() if not bool(portal_r.get("success")) and portal_r.get("error_detail") else "",
+                "attempts": int(portal_r.get("attempts") or 0),
                 "probe_module": str(portal_r.get("probe_module") or ""),
             },
             "gmail": gmail_r,

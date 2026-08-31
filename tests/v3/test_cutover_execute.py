@@ -524,6 +524,19 @@ def _prepared_fixture(
     }
     fixture_gates.pop("conditional_daytime_window", None)
     fixture_gates.pop("conditional_daytime_authorization_required", None)
+    fixture_gates["source_contract"]["legacy_v2_validation"] = "enabled"
+    fixture_gates["source_contract"]["database_relatives"] = [
+        relative for relative, _tables in mutation_module.FORMAL_STATE_DATABASES
+    ]
+    fixture_gates["automatic_no_go"] = list(
+        dict.fromkeys(
+            [
+                *fixture_gates["automatic_no_go"],
+                "v2_process_or_release_owner_still_active_before_v3_start",
+                "v2_port_scheduler_writer_or_model_owner_not_released",
+            ]
+        )
+    )
     _write_json(gates, fixture_gates)
     report = tmp_path / "evidence" / "pre-cutover.json"
     release_gate_report = tmp_path / "evidence" / "release-gate.json"
@@ -541,7 +554,7 @@ def _prepared_fixture(
             "schema_version": 1,
             "decision": "NO_GO",
             "fail_closed": True,
-            "required_count": 28,
+            "required_count": len(required_evidence),
             "expected_context": context,
             "passed": [item for item in required_evidence if item not in excluded],
             "missing": excluded,
@@ -567,9 +580,9 @@ def _prepared_fixture(
             "gate_config_sha256": _sha256(gates),
             "decision": "GO_FOR_CUTOVER_DRILL_ONLY",
             "execution_purpose": "atomic_drill",
-            "gate_stage": "cutover_drill_26_of_28",
-            "required_evidence_count": 28,
-            "passed_evidence_count": 26,
+            "gate_stage": f"cutover_drill_{len(required_evidence) - len(excluded)}_of_{len(required_evidence)}",
+            "required_evidence_count": len(required_evidence),
+            "passed_evidence_count": len(required_evidence) - len(excluded),
             "excluded_evidence": excluded,
             "expected_context": context,
             "release_gate_report": _binding(release_gate_report),

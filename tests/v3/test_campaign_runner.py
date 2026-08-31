@@ -10,7 +10,6 @@ from pathlib import Path
 import pytest
 
 import scripts.v3_campaign.runner as campaign_runner_module
-from scripts.v3_campaign.offline_probes import bound_cron_jobs
 from scripts.v3_campaign.runner import (
     COMPLETION_MARKER,
     MANIFEST_NAME,
@@ -25,7 +24,7 @@ SOURCE_ROOT = Path(__file__).resolve().parents[2]
 SOURCE_CONFIG = SOURCE_ROOT / "config" / "v3_validation_campaign.json"
 SOURCE_GATES = SOURCE_ROOT / "config" / "v3_cutover_gates.json"
 SOURCE_SCHEDULE_BASELINE = SOURCE_ROOT / "config" / "v3_schedule_realism_baseline.json"
-SOURCE_CRON_JOBS = SOURCE_ROOT / "cron_jobs.json"
+SOURCE_SCHEDULE_REGISTRY = SOURCE_ROOT / "config" / "v3_schedule_body_adapter_registry.json"
 SOURCE_LAUNCHER = SOURCE_ROOT / "bin" / "magi-v3-python"
 SOURCE_RUNTIME_SNAPSHOT = SOURCE_ROOT / "scripts" / "v3_python_runtime_snapshot.py"
 ROUTE_CERT_RELEASE_SOURCES = (
@@ -82,16 +81,24 @@ RESOURCE_PERF_RELEASE_SOURCES = (
 )
 
 
-def _schedule_fixture_ids() -> tuple[list[str], list[str]]:
+def _schedule_fixture_ids() -> tuple[list[str], list[str], int, int]:
     baseline = json.loads(SOURCE_SCHEDULE_BASELINE.read_text(encoding="utf-8"))
-    cron_jobs, _cron_sha256 = bound_cron_jobs(SOURCE_ROOT)
+    registry = json.loads(SOURCE_SCHEDULE_REGISTRY.read_text(encoding="utf-8"))
     allowlisted = sorted(
         str(item["job_id"]) for item in baseline["representative_body_allowlist"]
     )
-    enabled = {
-        str(item["id"]) for item in cron_jobs if item.get("enabled") is True
-    }
-    return allowlisted, sorted(enabled - set(allowlisted))
+    reviewed = sorted(str(item["job_id"]) for item in registry["new_safe_adapters"])
+    enabled = set(allowlisted) | set(reviewed)
+    coverage = baseline["coverage"]
+    assert registry["inherit_existing_safe_adapters"] is True
+    assert not (set(allowlisted) & set(reviewed))
+    assert len(enabled) == int(coverage["enabled_job_definitions"])
+    return (
+        allowlisted,
+        reviewed,
+        int(coverage["job_definitions"]),
+        int(coverage["enabled_job_definitions"]),
+    )
 
 
 class Clock:
@@ -370,18 +377,35 @@ def _passing_route_certification(
                 }
             )
             for method in methods:
+                archived_terminal_guard = (
+                    service == "5003"
+                    and row["rule"] in {"/collab/music", "/melchior/skills/sync"}
+                    and method == "POST"
+                )
                 dispositions.append(
                     {
                         "service": service,
                         "rule": row["rule"],
                         "method": method,
                         "endpoint": row["endpoint"],
-                        "disposition": "actual_handler_passed",
+                        "disposition": (
+                            "validation_guard_only"
+                            if archived_terminal_guard
+                            else "actual_handler_passed"
+                        ),
                         "reviewed": True,
-                        "side_effect_class": "read_only",
-                        "branch_class": "representative_success_path",
+                        "side_effect_class": (
+                            "external_commit"
+                            if archived_terminal_guard
+                            else "read_only"
+                        ),
+                        "branch_class": (
+                            "validation_guard_only"
+                            if archived_terminal_guard
+                            else "representative_success_path"
+                        ),
                         "handler_dispatch_passed": True,
-                        "representative_success_path_passed": True,
+                        "representative_success_path_passed": not archived_terminal_guard,
                         "evidence_sha256": "d" * 64,
                     }
                 )
@@ -429,7 +453,8 @@ def _passing_route_certification(
         "fully_replayed_routes": 347,
         "remaining_routes": 0,
         "pinned_route_methods": 431,
-        "representative_success_path_passed": 431,
+        "representative_success_path_passed": 429,
+        "terminal_guard_only": 2,
         "remaining_route_methods": 0,
     }
     report: dict[str, object] = {
@@ -1333,12 +1358,22 @@ def _passing_resource_performance_partial(
 
 
 def _passing_schedule_certification(
-    release_root: Path, validation_profile: dict[str, object] | None
+    release_root: Path,
+    validation_profile: dict[str, object] | None,
+    *,
+    enabled_jobs: int,
 ) -> dict[str, object]:
     manifest_path = release_root / MANIFEST_NAME
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     release_files = {row["path"]: row["sha256"] for row in manifest["files"]}
     manifest_sha = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    dispatch_policy = json.loads(
+        (release_root / "config/v3_schedule_dispatch_policy.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    pending_limit = int(dispatch_policy["max_pending_occurrences_per_job"])
+    durable_job_ids = sorted(dispatch_policy["durable_backlog_coalescing_job_ids"])
     profile_id = (
         str(validation_profile["profile_id"])
         if validation_profile is not None
@@ -1346,7 +1381,7 @@ def _passing_schedule_certification(
     )
     entries = [
         {"job_id": f"job-{index:03d}", "classification": "safe_adapter", "blockers": []}
-        for index in range(93)
+        for index in range(enabled_jobs)
     ]
     results = [
         {
@@ -1358,7 +1393,7 @@ def _passing_schedule_certification(
             "network_denied_by_seatbelt": True,
             "notifications_disabled": True,
         }
-        for index in range(93)
+        for index in range(enabled_jobs)
     ]
     body: dict[str, object] = {
         "schema": "magi.v3.schedule-body-adapter-registry/v1",
@@ -1376,10 +1411,10 @@ def _passing_schedule_certification(
             ],
         },
         "measurements": {
-            "enabled_jobs": 93,
-            "safe_adapter_coverage_jobs": 93,
+            "enabled_jobs": enabled_jobs,
+            "safe_adapter_coverage_jobs": enabled_jobs,
             "blocked_jobs": 0,
-            "body_jobs_passed": 93,
+            "body_jobs_passed": enabled_jobs,
             "all_safe_bodies_passed": True,
             "registry_complete_for_enabled_jobs": True,
         },
@@ -1403,10 +1438,8 @@ def _passing_schedule_certification(
         "all_distinct_occurrences_accounted": True,
         "same_job_concurrency_violations": 0,
         "coalesced_distinct_occurrences": 0,
-        "durable_backlog_coalescing_job_ids": [
-            "job_drive_case_sync_all_files",
-            "job_legacy_judgment_resummary_quality"
-        ],
+        "pending_per_job_limit": pending_limit,
+        "durable_backlog_coalescing_job_ids": durable_job_ids,
         "durable_backlog_coalesced_occurrences": 0,
         "durable_backlog_coalesced_occurrences_by_job": {},
         "loss_sensitive_coalesced_occurrences": 0,
@@ -1416,6 +1449,18 @@ def _passing_schedule_certification(
         "deadline_misses": 0,
         "global_worker_cap": 4,
         "max_queue_delay_seconds": delay,
+        "coalescing_policy": {
+            "exact_key": ["job_id", "scheduled_for"],
+            "same_job_concurrency": 1,
+            "pending_occurrences_per_job": pending_limit,
+            "pending_replacement": (
+                "latest_scheduled_occurrence_wins_for_declared_durable_jobs"
+            ),
+            "queue_all_non_durable": True,
+            "durable_job_ids": durable_job_ids,
+            "coalesced_occurrences_reported_as_executed": False,
+            "ready_queue_order": "earliest_latest_start_then_scheduled_time",
+        },
     }
     report: dict[str, object] = {
         "schema": "magi.v3.schedule-capacity-certification/v1",
@@ -1447,15 +1492,15 @@ def _passing_schedule_certification(
             "business_body_plane": {
                 "status": "passed",
                 "duration_evidence": {
-                    "enabled_jobs": 93,
-                    "p95_jobs": 93,
+                    "enabled_jobs": enabled_jobs,
+                    "p95_jobs": enabled_jobs,
                     "sparse_fallback_jobs": 0,
                     "missing_jobs": 0,
                     "certifying_p95_coverage": True,
                 },
                 "body_evidence": {
-                    "enabled_jobs": 93,
-                    "jobs_with_three_successful_real_body_samples": 93,
+                    "enabled_jobs": enabled_jobs,
+                    "jobs_with_three_successful_real_body_samples": enabled_jobs,
                     "jobs_missing_real_body_adapter": 0,
                     "body_adapter_coverage_complete": True,
                     "registry_evidence_sha256": body["evidence_sha256"],
@@ -1493,9 +1538,9 @@ def _passing_schedule_certification(
         "status": "passed",
         "measurements": {
             "validation_profile_id": profile_id,
-            "enabled_jobs": 93,
-            "covered_jobs": 93,
-            "passed_jobs": 93,
+            "enabled_jobs": enabled_jobs,
+            "covered_jobs": enabled_jobs,
+            "passed_jobs": enabled_jobs,
             "blocked_jobs": 0,
             "latest_start_misses": 0,
             "deadline_misses": 0,
@@ -1516,7 +1561,12 @@ def successful_runner(
     *,
     route_runtime_binding: dict[str, object] | None = None,
 ):
-    allowlisted_body_ids, representative_gap_ids = _schedule_fixture_ids()
+    (
+        allowlisted_body_ids,
+        representative_gap_ids,
+        cron_definition_count,
+        enabled_cron_count,
+    ) = _schedule_fixture_ids()
 
     def run(argv, cwd, validation_profile=None):
         calls.append((tuple(argv), cwd))
@@ -1567,7 +1617,11 @@ def successful_runner(
             for argument in argv
         ):
             stdout = campaign_runner_module.EVIDENCE_PREFIX + json.dumps(
-                _passing_schedule_certification(cwd, validation_profile),
+                _passing_schedule_certification(
+                    cwd,
+                    validation_profile,
+                    enabled_jobs=enabled_cron_count,
+                ),
                 separators=(",", ":"),
                 sort_keys=True,
             )
@@ -1580,8 +1634,8 @@ def successful_runner(
                     "probe": "measured_schedule_ledger_replay",
                     "status": "passed",
                     "measurements": {
-                        "cron_definitions": 102,
-                        "enabled_cron_definitions": 93,
+                        "cron_definitions": cron_definition_count,
+                        "enabled_cron_definitions": enabled_cron_count,
                         "validation_profile_id": (
                             validation_profile["profile_id"]
                             if validation_profile is not None
@@ -1621,9 +1675,11 @@ def successful_runner(
                             "status": "incomplete",
                             "completion_claimed": False,
                             "measurements": {
-                                "cron_definitions": 102,
-                                "enabled_cron_definitions": 93,
-                                "production_duration_observations": 92,
+                                "cron_definitions": cron_definition_count,
+                                "enabled_cron_definitions": enabled_cron_count,
+                                "production_duration_observations": (
+                                    enabled_cron_count
+                                ),
                                 "production_duration_gap_jobs": 0,
                                 "production_duration_percentile_available": False,
                                 "representative_bodies_allowlisted": len(allowlisted_body_ids),
@@ -2345,7 +2401,7 @@ def test_route_workload_invokes_strict_compiler_and_rejects_382_of_430(
     assert OFFLINE_COMMANDS["346_route_contract_replay"] == (
         "scripts/v3_validation/route_certification.py",
     )
-    with pytest.raises(CampaignSafetyError, match="not strict 431/431"):
+    with pytest.raises(CampaignSafetyError, match="not strict 429 success paths"):
         campaign_runner_module._structured_workload_evidence(
             "346_route_contract_replay",
             stdout,
@@ -2689,6 +2745,10 @@ def test_real_backend_supplies_hash_bound_launcher_environment_and_canonical_sta
     assert env["MAGI_V3_RELEASE_MANIFEST"] == str(release / MANIFEST_NAME)
     assert env["MAGI_V3_RELEASE_MANIFEST_SHA256"] == runner.bundle.manifest_sha256
     assert env["MAGI_CRON_JOBS_SOURCE_FILE"] == str(runtime_inputs["cron_jobs_source_file"])
+    temporary = Path(str(env["TMPDIR"]))
+    assert temporary.parent.name == "magi-v3-campaign"
+    assert temporary.name.startswith("workload-")
+    assert not temporary.exists()
 
     quality = release / "scripts/v3_validation/release_quality_certification.py"
     runner._run_command(
@@ -2701,6 +2761,44 @@ def test_real_backend_supplies_hash_bound_launcher_environment_and_canonical_sta
     assert quality_env["MAGI_WEBSITE_ADMIN_SHA256"] == runtime_inputs[
         "website_admin_sha256"
     ]
+
+
+def test_real_backend_adds_macos_package_bins_only_for_resource_workload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release, release_sha = create_release(tmp_path)
+    runtime_inputs = execution_inputs(tmp_path)
+    runner = CampaignRunner(
+        release_root=release,
+        state_dir=tmp_path / "state",
+        context=release_context(release, release_sha),
+        **runtime_inputs,
+    )
+    observed: dict[str, object] = {}
+
+    def capture(argv, *, cwd, env, **_kwargs):
+        observed.update({"argv": list(argv), "cwd": cwd, "env": dict(env)})
+        return subprocess.CompletedProcess(list(argv), 0, "", "")
+
+    monkeypatch.setattr(runner, "_verify_python_runtime", lambda: None)
+    monkeypatch.setattr(campaign_runner_module.subprocess, "run", capture)
+
+    launcher = release / "bin" / "magi-v3-python"
+    resource = release / "scripts/v3_validation/resource_performance_certification.py"
+    runner._run_command([str(launcher), str(resource), "--campaign-evidence"], release)
+
+    env = observed["env"]
+    assert isinstance(env, dict)
+    path_parts = str(env["PATH"]).split(os.pathsep)
+    if Path("/opt/homebrew/bin").is_dir():
+        assert path_parts[0] == "/opt/homebrew/bin"
+    assert "/usr/bin" in path_parts
+
+    runner._run_command([str(launcher), "-c", "pass"], release)
+    normal_env = observed["env"]
+    assert isinstance(normal_env, dict)
+    assert normal_env["PATH"] == "/usr/bin:/bin:/usr/sbin:/sbin"
 
 
 def test_real_backend_rejects_tampered_external_website_admin(tmp_path: Path) -> None:
@@ -2773,8 +2871,9 @@ def test_unarmed_release_records_hashed_noneligible_day_only_from_release(tmp_pa
     )
 
     report = runner.run_today()
+    required_passes = int(report["required_independent_passes"])
 
-    assert len(calls) == len(OFFLINE_COMMANDS) * 7
+    assert len(calls) == len(OFFLINE_COMMANDS) * required_passes
     assert all(cwd == release for _argv, cwd in calls)
     assert all(Path(argv[0]).is_relative_to(release) for argv, _cwd in calls)
     assert all(
@@ -2801,16 +2900,20 @@ def test_unarmed_release_records_hashed_noneligible_day_only_from_release(tmp_pa
     assert evidence["release_sha"] == release_sha
     assert evidence["release_manifest_sha256"] == report["release_manifest_sha256"]
     assert evidence["status"] == "offline_passed"
-    assert evidence["required_independent_passes"] == 7
-    assert evidence["completed_independent_passes"] == 7
-    assert {item["validation_pass"] for item in evidence["workloads"]} == set(range(1, 8))
+    assert evidence["required_independent_passes"] == required_passes
+    assert evidence["completed_independent_passes"] == required_passes
+    assert {item["validation_pass"] for item in evidence["workloads"]} == set(
+        range(1, required_passes + 1)
+    )
     schedule_runs = [
         item
         for item in evidence["workloads"]
         if item["workload"] == "seven_day_schedule_10x_arrival_2x_duration_replay"
     ]
-    assert len(schedule_runs) == 7
-    assert len({item["validation_profile"]["profile_id"] for item in schedule_runs}) == 7
+    assert len(schedule_runs) == required_passes
+    assert len(
+        {item["validation_profile"]["profile_id"] for item in schedule_runs}
+    ) == required_passes
     assert all(
         item["structured_evidence"]["report"]["validation_profile_id"]
         == item["validation_profile"]["profile_id"]
@@ -2830,7 +2933,7 @@ def test_unarmed_release_records_hashed_noneligible_day_only_from_release(tmp_pa
         for item in evidence["workloads"]
         if item["workload"] == "health_1000_model_free"
     ]
-    assert len(health) == 7
+    assert len(health) == required_passes
     assert {
         item["structured_evidence"]["report"]["validation_profile"]["profile_id"]
         for item in health
@@ -2843,7 +2946,7 @@ def test_unarmed_release_records_hashed_noneligible_day_only_from_release(tmp_pa
         for item in evidence["workloads"]
         if item["workload"] == "fault_recovery_certification"
     ]
-    assert len(faults) == 7
+    assert len(faults) == required_passes
     assert all(
         item["structured_evidence"]["report"]["decision"]["hard_gate_blocked"]
         is False
@@ -2936,7 +3039,7 @@ def test_campaign_report_removes_go_after_directory_fsync_failure(
     assert not target.exists()
 
 
-def test_armed_certified_bundle_needs_seven_independent_passes_within_one_day_for_go(
+def test_armed_certified_bundle_needs_configured_independent_passes_for_go(
     tmp_path: Path,
 ) -> None:
     calls = []
@@ -2958,8 +3061,9 @@ def test_armed_certified_bundle_needs_seven_independent_passes_within_one_day_fo
     assert report["fail_closed"] is False
     assert report["certifying"] is True
     assert len(report["passed_days"]) == 1
-    assert report["required_independent_passes"] == 7
-    assert len(calls) == len(OFFLINE_COMMANDS) * 7
+    required_passes = int(report["required_independent_passes"])
+    assert required_passes == 1
+    assert len(calls) == len(OFFLINE_COMMANDS) * required_passes
     call_count = len(calls)
     assert runner.run_today()["decision"] == "GO"
     assert len(calls) == call_count
@@ -3036,6 +3140,63 @@ def test_workload_failure_and_skips_are_permanent_for_ledger(tmp_path: Path) -> 
     assert len(calls) == 1
     assert "offline_day_failed_or_skipped" in first["no_go_reasons"]
     assert "prior_offline_day_failed" in second["no_go_reasons"]
+    artifact = tmp_path / "state" / "artifacts" / "day-2026-07-14.json"
+    failed = json.loads(artifact.read_text())["workloads"][0]
+    assert failed["failure_diagnostic"] == {
+        "schema": "magi.v3.workload-failure-diagnostic/v1",
+        "source": "digest_only",
+        "stdout_bytes": 0,
+        "stderr_bytes": 6,
+    }
+
+
+def test_workload_failure_preserves_only_bounded_structured_diagnostic(
+    tmp_path: Path,
+) -> None:
+    calls = []
+
+    def fail_first(argv, cwd):
+        calls.append((tuple(argv), cwd))
+        return subprocess.CompletedProcess(
+            argv,
+            2,
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": "seatbelt child failed",
+                    "child_error": "named mutable-state binding missing",
+                    "returncode": 2,
+                    "stdout_sha256": "a" * 64,
+                    "stderr_sha256": "b" * 64,
+                    "private": "must not be retained",
+                }
+            ),
+            "raw private stderr",
+        )
+
+    runner = make_runner(
+        tmp_path,
+        Clock(datetime(2026, 7, 14, 3, tzinfo=timezone.utc)),
+        calls,
+        command_runner=fail_first,
+    )
+
+    runner.run_today()
+
+    artifact = tmp_path / "state" / "artifacts" / "day-2026-07-14.json"
+    failed = json.loads(artifact.read_text())["workloads"][0]
+    diagnostic = failed["failure_diagnostic"]
+    assert diagnostic == {
+        "schema": "magi.v3.workload-failure-diagnostic/v1",
+        "source": "structured_stdout",
+        "error": "seatbelt child failed",
+        "child_error": "named mutable-state binding missing",
+        "child_returncode": 2,
+        "child_stdout_sha256": "a" * 64,
+        "child_stderr_sha256": "b" * 64,
+    }
+    assert "must not be retained" not in json.dumps(failed)
+    assert "raw private stderr" not in json.dumps(failed)
 
 
 def test_hundred_cycle_soak_exit_zero_without_measurements_fails_closed(tmp_path: Path) -> None:

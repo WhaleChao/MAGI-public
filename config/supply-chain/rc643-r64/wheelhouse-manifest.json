@@ -1,0 +1,131 @@
+{
+  "schema": "magi.wheelhouse-manifest/v1",
+  "files": [
+    {
+      "filename": "aiohttp-3.14.3-cp314-cp314-macosx_11_0_arm64.whl",
+      "size": 512957,
+      "sha256": "db332af25642007330fca8be5c4d194caf2bea7a7fc84415aff3497af5dfee6b"
+    },
+    {
+      "filename": "click-8.3.3-py3-none-any.whl",
+      "size": 110502,
+      "sha256": "a2bf429bb3033c89fa4936ffb35d5cb471e3719e1f3c8a7c3fff0b8314305613"
+    },
+    {
+      "filename": "cryptography-50.0.0-cp311-abi3-macosx_11_0_arm64.whl",
+      "size": 4001252,
+      "sha256": "031e2d5dd4bb9caa3ca9c82e5a197fd8ae680232cee62603d1a813f3f07e3d03"
+    },
+    {
+      "filename": "datasets-5.0.1-py3-none-any.whl",
+      "size": 559079,
+      "sha256": "9fbf73688f8c18f7529b4fe592abd04015f81d1e58001e4bac73ffb2b39d7cc4"
+    },
+    {
+      "filename": "docling-2.94.0-py3-none-any.whl",
+      "size": 4757,
+      "sha256": "e5f0c79091d4654f9b9a8b28dc064e421253295b3dbefd3424831c7ccc00a23a"
+    },
+    {
+      "filename": "docling_slim-2.94.0-py3-none-any.whl",
+      "size": 519383,
+      "sha256": "9c90e7e381eb9d70e8e64bc01cb1dec875c7d6f6e66d2ac39df14f5bb4a4a3d1"
+    },
+    {
+      "filename": "httplib2-0.32.0-py3-none-any.whl",
+      "size": 93148,
+      "sha256": "dc6705cacdf3fb0a2aba7629fa33c90fd93e30035db0c157325826be177e4816"
+    },
+    {
+      "filename": "idna-3.15-py3-none-any.whl",
+      "size": 72340,
+      "sha256": "048adeaf8c2d788c40fee287673ccaa74c24ffd8dcf09ffa555a2fbb59f10ac8"
+    },
+    {
+      "filename": "lxml-6.1.0-cp314-cp314-macosx_10_15_universal2.whl",
+      "size": 8576713,
+      "sha256": "ab863fd37458fed6456525f297d21239d987800c46e67da5ef04fc6b3dd93ac8"
+    },
+    {
+      "filename": "mcp-1.28.1-py3-none-any.whl",
+      "size": 222620,
+      "sha256": "2726bca5e7193f61c5dde8b12500a6de2d9acf6d1a1c0be9e8c2e706437991df"
+    },
+    {
+      "filename": "msal-1.38.0-py3-none-any.whl",
+      "size": 131057,
+      "sha256": "765b9b98b6aa380ee8b8f1c75636e08863edaf0a953498955bd668650dde5d49"
+    },
+    {
+      "filename": "pillow-12.3.0-cp314-cp314-macosx_11_0_arm64.whl",
+      "size": 4780131,
+      "sha256": "e158cb00350dc278f3b91551101aa7d12415a66ebf2c91d8d5ac14e56ddd3ad0"
+    },
+    {
+      "filename": "pip-26.2-py3-none-any.whl",
+      "size": 1816475,
+      "sha256": "931c303696af6fa3417112103b1cad26890e5a07eccb5b99783700e33f2b8aad"
+    },
+    {
+      "filename": "pyasn1-0.6.4-py3-none-any.whl",
+      "size": 84410,
+      "sha256": "deda9277cfd454080ec40b207fb6df82206a3a2688735233cdcd8d3d565f088b"
+    },
+    {
+      "filename": "pydantic_settings-2.14.2-py3-none-any.whl",
+      "size": 61715,
+      "sha256": "a20c97b37910b6550d5ea50fbcc2d4187defe58cd57070b73863d069419c9440"
+    },
+    {
+      "filename": "pyjwt-2.13.0-py3-none-any.whl",
+      "size": 31274,
+      "sha256": "66adcc2aff09b3f1bbd95fc1e1577df8ac8723c978552fd43304c8a290ac5728"
+    },
+    {
+      "filename": "pypdf-6.15.0-py3-none-any.whl",
+      "size": 378123,
+      "sha256": "14e001d6504822cb1ca9c7ed9a69bccb320f59b320730f55af804361abe4d5ee"
+    },
+    {
+      "filename": "pytest-9.0.3-py3-none-any.whl",
+      "size": 375249,
+      "sha256": "2c5efc453d45394fdd706ade797c0a81091eccd1d6e4bccfcd476e2b8e0ab5d9"
+    },
+    {
+      "filename": "python_multipart-0.0.31-py3-none-any.whl",
+      "size": 29996,
+      "sha256": "8408153d68a9773291fc1da39a8b85a50044bddbabd2dd72e9229776b7b15e28"
+    },
+    {
+      "filename": "setuptools-83.0.0-py3-none-any.whl",
+      "size": 1008090,
+      "sha256": "29b23c360f22f414dc7336bb39178cc7bcbf6021ed2733cde173f09dba19abb3"
+    },
+    {
+      "filename": "soupsieve-2.8.4-py3-none-any.whl",
+      "size": 37304,
+      "sha256": "e7e6b0769c8f51ed59acab6e994b00621096cfb1c640a7509295987388fbaf65"
+    },
+    {
+      "filename": "starlette-1.3.1-py3-none-any.whl",
+      "size": 73632,
+      "sha256": "c7372aae11c3c3f26a42df7bd626cec2f47d03483d261d369516a615a53714c6"
+    },
+    {
+      "filename": "torch-2.13.0-cp314-cp314-macosx_14_0_arm64.whl",
+      "size": 111227066,
+      "sha256": "d849b390e07d8d333ce8ecaf91b273c656c598379a19c9acf1318a883f6b391c"
+    },
+    {
+      "filename": "torchvision-0.28.0-cp314-cp314-macosx_14_0_arm64.whl",
+      "size": 1856014,
+      "sha256": "3bd9dba55224a9db4a2d77f6feaa5651770d8c8e86d3d0ddb0fa6bec54c8712b"
+    },
+    {
+      "filename": "urllib3-2.7.0-py3-none-any.whl",
+      "size": 131087,
+      "sha256": "9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897"
+    }
+  ],
+  "files_sha256": "3bae852458463d90f6085ad469ca6afb455ed693efadd742839ec6830048333a"
+}

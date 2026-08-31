@@ -1066,12 +1066,13 @@ def _cron_failure_detail(details: list[dict]) -> str:
     lines = []
     for item in details or []:
         status = str(item.get("status") or "")
-        if status not in {"failed", "stale", "deferred"}:
+        if status not in {"failed", "stale", "deferred", "queued"}:
             continue
         state = {
             "failed": "執行失敗",
             "stale": "超過預期時間未執行",
             "deferred": "資源保護延後",
+            "queued": "已排入執行佇列",
         }[status]
         if status == "deferred":
             state = {
@@ -1561,6 +1562,8 @@ def _cron_summary(enabled_count: int, cron_bot: bool, details: list[dict]) -> di
     failed = sum(1 for detail in details if detail.get("status") == "failed")
     stale = sum(1 for detail in details if detail.get("status") == "stale")
     deferred = sum(1 for detail in details if detail.get("status") == "deferred")
+    queued = sum(1 for detail in details if detail.get("status") == "queued")
+    pending = deferred + queued
     # A storage-deferred cron occurrence is already guarded by the dedicated
     # live NAS/Drive status module and will resume on its next bounded run.  Do
     # not duplicate that condition as a human-confirmation yellow light here;
@@ -1587,11 +1590,11 @@ def _cron_summary(enabled_count: int, cron_bot: bool, details: list[dict]) -> di
         parts.append(f"{failed}個失敗")
     if stale:
         parts.append(f"{stale}個逾時")
-    if deferred:
+    if pending:
         parts.append(
-            f"{deferred}個延後"
+            f"{pending}個延後"
             if deferred_requiring_attention
-            else f"{deferred}個待續跑"
+            else f"{pending}個待續跑"
         )
     if failed:
         state = "attention"
@@ -1609,6 +1612,8 @@ def _cron_summary(enabled_count: int, cron_bot: bool, details: list[dict]) -> di
         "failed": failed,
         "stale": stale,
         "deferred": deferred,
+        "queued": queued,
+        "pending": pending,
         "deferred_requiring_attention": deferred_requiring_attention,
     }
 
@@ -4591,7 +4596,7 @@ def _cron_details_from_state(jobs: list, cron_state: dict, *, now: datetime | No
         cron_expr = str(job.get("cron", "")).strip()
         last_run = _cron_display_timestamp(job, state_item)
         safe_rejection = _cron_safe_validation_rejection(job, state_item)
-        state_text = "\n".join(str(state_item.get(key) or "") for key in ("last_status", "last_error"))
+        last_status = str(state_item.get("last_status") or "").strip().lower()
         returncode = _cron_returncode(state_item.get("returncode", state_item.get("last_returncode")))
         semantic_text = "\n".join(
             str(state_item.get(key) or "")
@@ -4609,14 +4614,14 @@ def _cron_details_from_state(jobs: list, cron_state: dict, *, now: datetime | No
             if isinstance(state_item.get("v3_retry"), dict)
             else {}
         )
+        retry_status = str(retry_occurrence.get("status") or "").strip().lower()
         automatic_retry_waiting = (
-            str(retry_occurrence.get("status") or "").strip().lower()
-            in {"queued", "running"}
-            or "magi 已自動接手" in semantic_text
+            retry_status in {"queued", "running"}
         )
         semantic_job_waiting = (
             job_id == "job_1770705679"
             and "all_judgment_reason_searches_failed" in semantic_text
+            and last_status not in {"ok", "passed", "success"}
         )
         resource_waiting = (
             "resource_guard_skipped" in semantic_text
@@ -4637,7 +4642,14 @@ def _cron_details_from_state(jobs: list, cron_state: dict, *, now: datetime | No
                 or "semantic_path_collision" in semantic_text
             )
         )
-        partial_waiting = (
+        terminal_deferred = (
+            last_status in {"deferred", "partial"}
+            or (
+                returncode == 75
+                and last_status not in {"ok", "passed", "success"}
+            )
+        )
+        partial_waiting = terminal_deferred and (
             returncode == 75
             or '"status": "partial"' in semantic_text
             or "'status': 'partial'" in semantic_text
@@ -4651,27 +4663,27 @@ def _cron_details_from_state(jobs: list, cron_state: dict, *, now: datetime | No
                 "stale file handle",
             )
         )
-        deferred = (
+        review_required = bool(
+            state_item.get("last_review_required")
+            or state_item.get("last_candidate_rejected")
+        )
+        active_deferred = (
             safe_rejection
-            or "deferred" in state_text.lower()
+            or review_required
             or automatic_retry_waiting
-            or resource_waiting
-            or partial_waiting
             or semantic_job_waiting
-            or any(
-                marker in semantic_text
-                for marker in (
-                    "upstream",
-                    "external service",
-                    "external_service",
-                    "http 500",
-                    "temporarily unavailable",
-                    "service unavailable",
+            or (
+                occurrence_pending
+                and (
+                    terminal_deferred
+                    or resource_waiting
+                    or partial_waiting
                 )
             )
         )
+        historical_deferred = terminal_deferred and not active_deferred
         wait_reason = ""
-        if deferred:
+        if active_deferred:
             if safe_rejection:
                 wait_reason = "candidate_rejected"
             elif automatic_retry_waiting:
@@ -4755,11 +4767,19 @@ def _cron_details_from_state(jobs: list, cron_state: dict, *, now: datetime | No
             if failed
             else (
                 "deferred"
-                if deferred
+                if active_deferred
                 else (
                     "stale"
                     if stale
-                    else ("queued" if occurrence_pending else ("waiting" if not last_run else "ok"))
+                    else (
+                        "queued"
+                        if occurrence_pending
+                        else (
+                            "history"
+                            if historical_deferred
+                            else ("waiting" if not last_run else "ok")
+                        )
+                    )
                 )
             )
         )
@@ -4774,11 +4794,20 @@ def _cron_details_from_state(jobs: list, cron_state: dict, *, now: datetime | No
                 "status": status,
                 "stale": stale,
                 "safe_rejection": safe_rejection,
+                "historical_deferred": historical_deferred,
                 "superseded_by_release": superseded_by_release,
                 "wait_reason": wait_reason,
             }
         )
-    priority = {"failed": 0, "stale": 1, "deferred": 2, "waiting": 3, "queued": 4, "ok": 4}
+    priority = {
+        "failed": 0,
+        "stale": 1,
+        "deferred": 2,
+        "waiting": 3,
+        "queued": 4,
+        "history": 4,
+        "ok": 4,
+    }
     return sorted(details, key=lambda detail: (priority.get(str(detail.get("status")), 4), str(detail.get("id") or "")))
 
 

@@ -137,6 +137,7 @@ COMMIT_READY_PROFILES = {"full", "live", "weekly-deep", "commercial"}
 # while keeping the child test process hermetic.
 CROSS_SURFACE_TEST_ENV = {
     "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTHONPYCACHEPREFIX": "/dev/null",
     "MAGI_GOOGLE_CALENDAR_TOKEN_PATH": "",
     "MAGI_CRON_JOBS_FILE": "",
     "MAGI_CRON_JOBS_SHA256": "",

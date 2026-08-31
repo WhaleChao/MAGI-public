@@ -134,7 +134,18 @@ SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("nvidia_nim_key", re.compile(r"\bnvapi-[A-Za-z0-9_-]{24,}\b")),
     ("bearer_token", re.compile(r"\bBearer\s+[A-Za-z0-9._-]{24,}\b")),
     ("inline_password", re.compile(r"(?i)\bpassword\s*[:=]\s*['\"][^'\"]{8,}['\"]")),
-    ("mysql_cli_password", re.compile(r"-p['\"][^,'\"]{8,}['\"]")),
+    # Shell syntax (``-p'secret'``) and quoted argv literals
+    # (``\"-psecret\"``) are distinct.  Requiring actual password material
+    # between the flag and its closing quote avoids treating a source check
+    # such as ``\"-p\" not in command`` as a credential.
+    (
+        "mysql_cli_password",
+        re.compile(r"(?:^|\s)-p(?:['\"][^,'\"\s{}]{8,}['\"]|[^\s,'\"{}]{8,})"),
+    ),
+    (
+        "mysql_cli_password",
+        re.compile(r"(['\"])-p[^,'\"\s{}]{8,}\1"),
+    ),
 )
 
 PII_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
@@ -231,6 +242,18 @@ def _is_allowed_secret_example(rel_path: str, line: str) -> bool:
 def _is_allowed_pii_example(rel_path: str, line: str, kind: str) -> bool:
     """Allow intentional fixture data without muting production files."""
 
+    if rel_path == "static/exam_tutor/essay_bank.json" and kind == "taiwan_mobile":
+        # This immutable public legal-study corpus contains ten-digit agency
+        # document numbers that share Taiwan mobile-number syntax.  Exempt the
+        # line only when *every* such token has the exact official
+        # ``...字第 <number> 號函/號令`` context; an ordinary phone-like token in
+        # the same corpus therefore restores the fail-closed finding.
+        matches = list(dict(PII_PATTERNS)[kind].finditer(line))
+        return bool(matches) and all(
+            re.search(r"(?:字第|第)[^0-9]{0,40}$", line[max(0, match.start() - 48):match.start()])
+            and re.match(r"\s*號(?:函|令)", line[match.end():match.end() + 12])
+            for match in matches
+        )
     if not rel_path.startswith("tests/"):
         return False
     lower = line.lower()

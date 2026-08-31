@@ -5,9 +5,10 @@ local-first operations platform that coordinates interactive web services,
 durable schedules, isolated workers, legal-office workflows, document and media
 processing, storage synchronization, local models, and verifiable recovery.
 
-This private repository is the original MAGI V2 repository renamed in place to
-**MAGI-v3**. The V2 commit, branch, and tag history is preserved. V3 replaces the
-old many-daemon runtime with an immutable release, three production roles,
+This public repository is the privacy-filtered MAGI V3 engineering snapshot.
+The retired V2 history remains in the private engineering repository for audit
+and migration archaeology; it is not an active runtime, compatibility target,
+or promotion matrix. V3 uses immutable releases, three production roles,
 explicit ownership, bounded workers, durable state, and hash-bound promotion.
 
 > This Git repository is an engineering source snapshot, not the live runtime.
@@ -15,6 +16,22 @@ explicit ownership, bounded workers, durable state, and hash-bound promotion.
 > and canonical production receipts are deliberately excluded.
 
 Traditional Chinese: [README.zh-TW.md](README.zh-TW.md)
+
+## Current verified release
+
+- **Public product label:** MAGI RC643 / R75 (verified 2026-08-31).
+- **Maintenance documentation revision:** RC643/R75, with HTML, PDF, Markdown,
+  and a machine-readable source index on this branch.
+- **Live manual:** authenticated `/manual`, served from the immutable active
+  release with `private, no-store` responses.
+- **Rollback floor:** immutable r59; newer R75 hotfix packages do not change the
+  public product label.
+- **Bounded LIVE observation:** business modules, commercial readiness, model
+  topology, host diagnostics, NAS listing, and external login canary passed.
+
+The active marker and installed manifest on the deployment host are the only
+authority for the exact package currently running. Historical RC627–RC641 files
+remain archival evidence only and are not selected by the live manual route.
 
 ## Contents
 
@@ -147,6 +164,12 @@ has a path, size, mode, and SHA-256. Symlinks, special files, unknown additions,
 source drift, and post-seal mutation are rejected. Release code is never used as
 a queue, cache, log directory, or credential store.
 
+Host-level singleton services never bind their installed launch configuration to
+a versioned `releases/v3-*` directory. A stable host launcher resolves the active
+marker and verifies the release manifest plus the selected script hash before
+starting memory watchdog, optional MTP, or Paperclip services. This lets an old
+release be retired without leaving a hidden restart dependency.
+
 ### Mutable runtime
 
 Runtime state is external to the release and divided by ownership:
@@ -269,7 +292,6 @@ Typical source checks:
 python3 -m pytest -q tests/test_dashboard_pages_blueprint.py
 python3 -m pytest -q tests/test_web_information_architecture.py
 python3 -m py_compile api/blueprints/dashboard_pages.py
-python3 scripts/privacy_audit.py --strict
 python3 scripts/public_release_audit.py --public-isolation --strict
 git diff --check
 ```
@@ -364,19 +386,22 @@ linked below.
 
 ## Documentation
 
-- [Maintenance encyclopedia — self-contained HTML](docs/MAGI_V3_維修百科全書_rc641.html)
-- [Maintenance encyclopedia — PDF](docs/MAGI_V3_維修百科全書_rc641.pdf)
-- [Maintainable encyclopedia source — Markdown](docs/MAGI_V3_維修百科全書_rc641.md)
-- [Machine-readable source index](docs/MAGI_V3_原始碼索引_rc641.json)
-- [Private engineering index](docs/MAGI_V3_工程技術手冊_rc632_私版.md)
-- [Public technical manual](docs/MAGI_V3_技術手冊_rc632_公版.md)
+- [Maintenance encyclopedia — self-contained HTML](docs/MAGI_V3_維修百科全書_rc643.html)
+- [Maintenance encyclopedia — PDF](docs/MAGI_V3_維修百科全書_rc643.pdf)
+- [Maintainable encyclopedia source — Markdown](docs/MAGI_V3_維修百科全書_rc643.md)
+- [Machine-readable source index](docs/MAGI_V3_原始碼索引_rc643.json)
 - [Architecture reference](docs/architecture/v3/MAGI_V3_ARCHITECTURE.md)
+- [V3 Agent Gateway (MCP interface for approved clients)](docs/architecture/v3/MAGI_AGENT_GATEWAY.md)
 - [Self-host deployment](docs/SELFHOST_DEPLOYMENT.md)
 
 The HTML encyclopedia is also packaged into each release under
 `magi_v3/manual_assets/` and exposed through authenticated MAGI navigation. It
 includes a generated table of contents, full-text search, source links, and a
 day/night theme using the same local preference as the MAGI UI.
+
+RC627–RC641 manuals are migration history under
+`docs/archive/legacy-releases/`; they are not release assets and are never
+selected by the live `/manual` route.
 
 ## Public/private repository boundary
 

@@ -197,16 +197,38 @@ _OSC_HELPER_HOST = os.environ.get("MAGI_OSC_SHELL_NAS_HELPER_HOST", "127.0.0.1")
 _OSC_HELPER_PORT = int(os.environ.get("MAGI_OSC_SHELL_NAS_HELPER_PORT", "5016") or "5016")
 _OSC_HELPER_LISTDIR_TIMEOUT = float(os.environ.get("MAGI_OSC_SHELL_NAS_HELPER_LISTDIR_TIMEOUT_SEC", "7.0") or "7.0")
 _OSC_HELPER_STAGE_TIMEOUT = float(os.environ.get("MAGI_OSC_SHELL_NAS_HELPER_STAGE_TIMEOUT_SEC", "90") or "90")
+_OSC_NAS_METADATA_CACHE_FRESH_SECONDS = max(
+    1.0,
+    float(os.environ.get("MAGI_OSC_NAS_METADATA_CACHE_FRESH_SEC", "5") or "5"),
+)
+_OSC_NAS_METADATA_CACHE_STALE_SECONDS = max(
+    _OSC_NAS_METADATA_CACHE_FRESH_SECONDS,
+    float(os.environ.get("MAGI_OSC_NAS_METADATA_CACHE_STALE_SEC", "300") or "300"),
+)
+_OSC_NAS_METADATA_CACHE_MAX_ENTRIES = max(
+    16,
+    min(1024, int(os.environ.get("MAGI_OSC_NAS_METADATA_CACHE_MAX", "256") or "256")),
+)
+_OSC_NAS_METADATA_CACHE_LOCK = threading.RLock()
+_OSC_NAS_METADATA_CACHE: dict[str, tuple[float, list[dict]]] = {}
 
 
 def _osc_shell_nas_helper_url() -> str:
     return f"http://{_OSC_HELPER_HOST}:{_OSC_HELPER_PORT}"
 
 
-def _osc_shell_nas_helper_request(path: str, timeout: float | None = None) -> list[dict]:
+def _osc_shell_nas_helper_request(
+    path: str,
+    timeout: float | None = None,
+    *,
+    force_refresh: bool = False,
+) -> list[dict]:
     if timeout is None:
         timeout = _OSC_HELPER_LISTDIR_TIMEOUT
-    url = _osc_shell_nas_helper_url() + "/listdir?" + urlencode({"path": os.path.realpath(path)})
+    query = {"path": os.path.realpath(path)}
+    if force_refresh:
+        query["refresh"] = "1"
+    url = _osc_shell_nas_helper_url() + "/listdir?" + urlencode(query)
     req = Request(url, method="GET")
     try:
         with urlopen(req, timeout=timeout) as response:
@@ -240,6 +262,29 @@ def _osc_shell_nas_helper_request(path: str, timeout: float | None = None) -> li
                 row["is_dir"] = False
         normalized.append(row)
     return normalized
+
+
+def _nas_metadata_cache_get(path: str, *, max_age: float) -> list[dict] | None:
+    key = os.path.realpath(path)
+    with _OSC_NAS_METADATA_CACHE_LOCK:
+        cached = _OSC_NAS_METADATA_CACHE.get(key)
+        if cached is None:
+            return None
+        created_at, rows = cached
+        if time.monotonic() - created_at > max(0.0, float(max_age)):
+            return None
+        return [dict(row) for row in rows]
+
+
+def _nas_metadata_cache_put(path: str, rows: list[dict]) -> None:
+    key = os.path.realpath(path)
+    cloned = [dict(row) for row in rows if isinstance(row, dict)]
+    with _OSC_NAS_METADATA_CACHE_LOCK:
+        _OSC_NAS_METADATA_CACHE[key] = (time.monotonic(), cloned)
+        if len(_OSC_NAS_METADATA_CACHE) <= _OSC_NAS_METADATA_CACHE_MAX_ENTRIES:
+            return
+        oldest = min(_OSC_NAS_METADATA_CACHE, key=lambda item: _OSC_NAS_METADATA_CACHE[item][0])
+        _OSC_NAS_METADATA_CACHE.pop(oldest, None)
 
 
 def _osc_shell_nas_stage_request(local_file: str, timeout: float | None = None) -> str:
@@ -817,9 +862,10 @@ def _listdir_with_metadata_via_subprocess(path: str, *, timeout: float = 7.0) ->
     """List entries and metadata in one timeout-bound subprocess call."""
     code = (
         "import os,sys,json,stat\n"
+        "from concurrent.futures import ThreadPoolExecutor\n"
         "path = sys.argv[1]\n"
-        "out = []\n"
-        "for name in os.listdir(path):\n"
+        "names = os.listdir(path)\n"
+        "def inspect(name):\n"
         "    full = os.path.join(path, name)\n"
         "    item = {\n"
         "        \"name\": name,\n"
@@ -829,14 +875,17 @@ def _listdir_with_metadata_via_subprocess(path: str, *, timeout: float = 7.0) ->
         "        \"errno\": 0,\n"
         "    }\n"
         "    try:\n"
-        "        st = os.stat(full)\n"
+        "        st = os.stat(full, follow_symlinks=False)\n"
         "        item[\"is_dir\"] = bool(st.st_mode and stat.S_ISDIR(st.st_mode))\n"
         "        item[\"size\"] = int(st.st_size)\n"
         "        item[\"mtime\"] = int(st.st_mtime)\n"
         "    except Exception as e:\n"
         "        item[\"errno\"] = int(getattr(e, \"errno\", 0) or 0)\n"
         "        item[\"error\"] = str(e)\n"
-        "    out.append(item)\n"
+        "    return item\n"
+        "workers = max(1, min(8, len(names) or 1))\n"
+        "with ThreadPoolExecutor(max_workers=workers) as pool:\n"
+        "    out = list(pool.map(inspect, names))\n"
         "print(json.dumps(out, ensure_ascii=False))\n"
     )
     try:
@@ -878,35 +927,69 @@ def _listdir_with_metadata_via_subprocess(path: str, *, timeout: float = 7.0) ->
 def _listdir_with_metadata_with_retry(
     path: str,
     *,
-    max_attempts: int = 2,
+    max_attempts: int = 1,
     base_delay: float = 0.12,
-    timeout: float = 2.5,
+    timeout: float | None = None,
+    force_refresh: bool = False,
 ) -> list[dict]:
-    """Retry metadata helper for transient NAS errors and timeout."""
+    """Read NAS metadata once, with cache and a non-duplicating fallback."""
     attempts = max(1, int(max_attempts))
     last_err: OSError | None = None
     network_path = _is_network_nas_path(path)
+    request_timeout = _OSC_HELPER_LISTDIR_TIMEOUT if timeout is None else max(0.5, float(timeout))
     if network_path:
-        for attempt in range(attempts):
+        if not force_refresh:
+            cached = _nas_metadata_cache_get(
+                path,
+                max_age=_OSC_NAS_METADATA_CACHE_FRESH_SECONDS,
+            )
+            if cached is not None:
+                return cached
+
+        # The helper already has a disposable child, a per-directory
+        # single-flight lock, and stale-while-revalidate. Repeating the same
+        # request from a Flask worker only multiplies SMB latency.
+        for attempt in range(min(attempts, 1)):
             try:
-                return _osc_shell_nas_helper_request(path, timeout=timeout)
+                if force_refresh:
+                    rows = _osc_shell_nas_helper_request(
+                        path,
+                        timeout=request_timeout,
+                        force_refresh=True,
+                    )
+                else:
+                    rows = _osc_shell_nas_helper_request(path, timeout=request_timeout)
+                _nas_metadata_cache_put(path, rows)
+                return rows
             except OSError as exc:
                 last_err = exc
-                if attempt < attempts - 1:
-                    time.sleep(base_delay * (2 ** attempt))
-                    continue
                 break
-        _log.info("NAS helper unavailable; falling back to local metadata listing: %s", last_err)
+
+        cached = _nas_metadata_cache_get(
+            path,
+            max_age=_OSC_NAS_METADATA_CACHE_STALE_SECONDS,
+        )
+        if cached is not None:
+            _log.warning("NAS helper refresh failed; serving recent successful listing: %s", last_err)
+            return cached
+
+        helper_error = str(last_err or "").lower()
+        if "http 504" in helper_error or "timed out" in helper_error or "timeout" in helper_error:
+            raise last_err or OSError("NAS helper timed out")
+        _log.info("NAS helper unavailable; using one bounded local metadata fallback: %s", last_err)
 
     # The helper's child is deliberately short-lived.  If it is unavailable,
     # the direct fallback still needs enough time for one directory scan plus
     # per-entry metadata on SMB/File Provider mounts. Keep it in a disposable
     # child process and try it only once: this recovery remains bounded.
     fallback_attempts = 1 if network_path else attempts
-    fallback_timeout = max(7.0, float(timeout)) if network_path else float(timeout)
+    fallback_timeout = max(7.0, request_timeout) if network_path else request_timeout
     for attempt in range(fallback_attempts):
         try:
-            return _listdir_with_metadata_via_subprocess(path, timeout=fallback_timeout)
+            rows = _listdir_with_metadata_via_subprocess(path, timeout=fallback_timeout)
+            if network_path:
+                _nas_metadata_cache_put(path, rows)
+            return rows
         except TimeoutError as exc:
             last_err = OSError(str(exc))
             if attempt < fallback_attempts - 1:
@@ -928,11 +1011,17 @@ def _dir_metadata_map(
     path: str,
     *,
     use_subprocess_for_network: bool = True,
-    max_attempts: int = 2,
-    timeout: float = 2.5,
+    max_attempts: int = 1,
+    timeout: float | None = None,
+    force_refresh: bool = False,
 ) -> dict[str, dict]:
     if _is_network_nas_path(path) and use_subprocess_for_network:
-        rows = _listdir_with_metadata_with_retry(path, max_attempts=max_attempts, timeout=timeout)
+        rows = _listdir_with_metadata_with_retry(
+            path,
+            max_attempts=max_attempts,
+            timeout=timeout,
+            force_refresh=force_refresh,
+        )
         return {
             str(r.get("name")): {
                 "name": str(r.get("name")),
@@ -1167,9 +1256,10 @@ def _browse_entries_with_helper(
     *,
     summarize: bool = True,
     show_hidden: bool = False,
+    force_refresh: bool = False,
 ) -> tuple[list[dict], list[dict], int]:
     """Path helper fallback when direct scandir metadata is unreliable."""
-    metadata = _dir_metadata_map(target)
+    metadata = _dir_metadata_map(target, force_refresh=force_refresh)
     names = sorted(metadata.keys())
     folders: list[dict] = []
     files: list[dict] = []
@@ -1847,6 +1937,7 @@ def osc_folders_tree_api():
     base = str(request.args.get("base_path") or "").strip()
     relative = str(request.args.get("relative_path") or "").strip().strip("/")
     show_hidden = str(request.args.get("show_hidden") or "").strip().lower() in {"1", "true", "yes"}
+    force_refresh = str(request.args.get("refresh") or "").strip().lower() in {"1", "true", "yes"}
 
     if not base:
         return jsonify({"ok": False, "error": "base_path required"}), 400
@@ -1870,7 +1961,11 @@ def osc_folders_tree_api():
 
     children = []
     try:
-        metadata = _dir_metadata_map(target)
+        metadata = (
+            _dir_metadata_map(target, force_refresh=True)
+            if force_refresh
+            else _dir_metadata_map(target)
+        )
         target_items = sorted(metadata.keys())
         for name in target_items:
             if _is_hidden_name(name) and not show_hidden:
@@ -1908,11 +2003,13 @@ def osc_folders_tree_api():
             })
     except OSError as e:
         _log.warning("folder tree listing failed: %s", e)
-        return jsonify({
+        response = jsonify({
             "ok": False,
             "error": "listdir_failed",
             "message": "暫時無法讀取資料夾。請稍後重新整理，或確認 NAS 連線。",
-        }), 503
+        })
+        response.headers["Retry-After"] = "1"
+        return response, 503
 
     return jsonify({
         "ok": True,
@@ -2197,6 +2294,7 @@ def osc_folders_browse_api():
     relative = str(request.args.get("relative_path") or "").strip().strip("/")
     show_hidden = str(request.args.get("show_hidden") or "").strip().lower() in {"1", "true", "yes"}
     summarize = str(request.args.get("summarize_dirs") or "0").strip().lower() in {"1", "true", "yes"}
+    force_refresh = str(request.args.get("refresh") or "").strip().lower() in {"1", "true", "yes"}
 
     if not base:
         return jsonify({"ok": False, "error": "base_path required"}), 400
@@ -2222,11 +2320,16 @@ def osc_folders_browse_api():
     try:
         if use_nas_meta:
             source = "folder_helper"
+            helper_kwargs = {
+                "summarize": summarize,
+                "show_hidden": show_hidden,
+            }
+            if force_refresh:
+                helper_kwargs["force_refresh"] = True
             folders, files, hidden_count = _browse_entries_with_helper(
                 base_real,
                 target,
-                summarize=summarize,
-                show_hidden=show_hidden,
+                **helper_kwargs,
             )
         else:
             folders, files, hidden_count = _browse_entries_with_scandir(
@@ -2237,7 +2340,21 @@ def osc_folders_browse_api():
             )
             source = "scandir"
     except OSError as e:
-        # NAS folders can intermittently fail scandir; try helper once as final fallback.
+        # A NAS request already used the dedicated helper, its cache, and its
+        # bounded fallback. Calling the same chain again doubles latency and
+        # creates a request stampede without adding a distinct recovery path.
+        if use_nas_meta:
+            _log.warning("folder browse failed after bounded NAS helper path: %s", e)
+            response = jsonify({
+                "ok": False,
+                "error": "listdir_failed",
+                "message": "無法讀取資料夾。請確認 NAS 已掛載，或稍後再重新整理。",
+            })
+            response.headers["Retry-After"] = "1"
+            return response, 503
+
+        # Local/File Provider folders may still benefit from the dedicated
+        # helper when their in-process scandir fails intermittently.
         try:
             folders, files, hidden_count = _browse_entries_with_helper(
                 base_real,
@@ -2248,11 +2365,13 @@ def osc_folders_browse_api():
             source = "folder_helper"
         except OSError as e2:
             _log.warning("folder browse failed: scandir=%s helper=%s", e, e2)
-            return jsonify({
+            response = jsonify({
                 "ok": False,
                 "error": "listdir_failed",
                 "message": "無法讀取資料夾。請確認 NAS 已掛載，或稍後再重新整理。",
-            }), 503
+            })
+            response.headers["Retry-After"] = "1"
+            return response, 503
 
     if source == "scandir" and not folders and not files:
         source = "fallback_empty"

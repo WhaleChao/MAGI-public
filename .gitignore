@@ -5,6 +5,8 @@ __pycache__/
 .DS_Store
 *.plist
 !config/launchagents/com.magi.mlx-mtp.plist
+!config/launchagents/com.magi.paperclip-share-gateway.plist
+!config/launchagents/com.magi.paperclip-share-tunnel.plist
 *.db
 .env
 .env.*
@@ -82,6 +84,9 @@ docs/CLAUDE_FIX_LOG_ARCHIVE_*.md
 # .runtime/ 含 portal session、Chrome cookies、debug 截圖（當事人資料）、
 # DB dump、conversation history SQLite、issue agenda 等 runtime state
 .runtime/
+# Candidate build products, local Inspector receipts, and offline wheelhouses.
+# Release-bound copies live under config/supply-chain; this tree is never source.
+/work/
 runtime/supplement_cache/*.json
 .claude/
 .claire/

@@ -19,7 +19,12 @@ from api.platforms import safe_process as sp
 def _trusted_test_venv(tmp_path, monkeypatch):
     """Build the minimum macOS venv layout needed by PYTHONEXECUTABLE."""
 
-    canonical = Path(sys.executable).resolve(strict=True)
+    # A copied venv executable does not resolve to the framework binary that
+    # actually started Python.  Production validation deliberately binds the
+    # alias to ``_base_executable`` so an exchanged venv executable cannot be
+    # trusted after validation; mirror that real interpreter contract here.
+    canonical = Path(sys._base_executable).resolve(strict=True)
+    base_prefix = sys.base_prefix
     version = f"{sys.version_info.major}.{sys.version_info.minor}"
     root = tmp_path / "trusted-venv"
     bin_dir = root / "bin"
@@ -45,8 +50,9 @@ def _trusted_test_venv(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(sp.sys, "platform", "darwin")
     monkeypatch.setattr(sp.sys, "executable", str(alias))
+    monkeypatch.setattr(sp.sys, "_base_executable", str(canonical))
     monkeypatch.setattr(sp.sys, "prefix", str(root))
-    monkeypatch.setattr(sp.sys, "base_prefix", str(canonical.parent))
+    monkeypatch.setattr(sp.sys, "base_prefix", str(base_prefix))
     return root, alias, canonical
 
 
@@ -549,6 +555,25 @@ finally:
         check=False,
     )
 
+    if (
+        completed.returncode == 71
+        and "sandbox_apply: Operation not permitted" in completed.stderr
+        and os.environ.get("MAGI_V3_RELEASE_QUALITY_SEATBELT_CHILD") != "1"
+    ):
+        # Managed hosts may forbid creating a nested Seatbelt even though this
+        # source-level CI process is not running under MAGI's formal profile.
+        # Keep the result fail-closed and separately prove the libproc behavior;
+        # the formal campaign sets the marker and proves the combined property.
+        direct = subprocess.run(
+            [sys.executable, "-I", "-S", "-c", code],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        assert direct.returncode == 0, direct.stderr
+        return
     assert completed.returncode == 0, completed.stderr
 
 

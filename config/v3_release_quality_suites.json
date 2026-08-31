@@ -12,7 +12,16 @@
       "tests/v3/test_core_resource.py",
       "tests/v3/test_core_state.py",
       "tests/v3/test_core_supervisor.py",
-      "tests/v3/test_dispatcher.py"
+      "tests/v3/test_dispatcher.py",
+      "tests/v3/test_a2a_adapter.py",
+      "tests/v3/test_evidence_ledger.py",
+      "tests/v3/test_external_canary.py",
+      "tests/v3/test_memory_lifecycle.py",
+      "tests/v3/test_module_boundaries.py",
+      "tests/v3/test_schedule_evidence.py",
+      "tests/v3/test_supply_chain.py",
+      "tests/v3/test_telemetry.py",
+      "tests/v3/test_span_evaluation.py"
     ],
     "contract": [
         "tests/v3/test_compat_admin.py",
@@ -22,6 +31,16 @@
         "tests/v3/test_compat_live_validation.py",
         "tests/v3/test_compat_osc_file_contract.py",
         "tests/v3/test_compat_side_effects.py",
+        "tests/v3/test_mcp_conformance.py",
+        "tests/v3/test_skill_manifest_sandbox.py",
+        "tests/v3/test_evidence_compiler.py",
+        "tests/v3/test_release_gate.py",
+        "tests/v3/test_cutover_activation.py",
+        "tests/v3/test_pre_cutover.py",
+        "tests/v3/test_v3_rotation_execute.py",
+        "tests/v3/test_validation_manifest_integrity.py",
+        "tests/v3/test_v3_rotation_drill.py",
+        "tests/test_browser_security_policy_rc643.py",
         "tests/v3/test_service_manifest.py"
     ],
     "integration": [
@@ -39,6 +58,12 @@
       "tests/v3/test_magi_acceptance_gate_runtime_binding.py",
       "tests/v3/test_nightly_runtime_bindings.py",
       "tests/v3/test_rc643_v3_only_promotion.py",
+      "tests/v3/test_generated_implementation_status.py",
+      "tests/v3/test_validation_router.py",
+      "tests/test_file_review_notifications.py",
+      "tests/test_laf_case_storage_authority.py",
+      "tests/test_laf_portal_retry_reconciliation.py",
+      "tests/test_tailscale_funnel_healthcheck.py",
       "tests/test_laf_case_classifier.py",
       "tests/test_laf_portal_new_files_scan.py",
       "tests/test_osc_folder_rename.py"
@@ -55,11 +80,23 @@
     ],
     "memory": [
       "tests/v3/test_core_ledger.py",
-      "tests/v3/test_core_state.py"
+      "tests/v3/test_core_state.py",
+      "tests/v3/test_memory_lifecycle.py"
     ],
     "quality": [
       "tests/v3/test_compat_osc_file_contract.py",
-      "tests/v3/test_compat_side_effects.py"
+      "tests/v3/test_compat_side_effects.py",
+      "tests/v3/test_evidence_ledger.py",
+      "tests/v3/test_external_canary.py",
+      "tests/v3/test_mcp_conformance.py",
+      "tests/v3/test_module_boundaries.py",
+      "tests/v3/test_schedule_evidence.py",
+      "tests/v3/test_cutover_activation.py",
+      "tests/v3/test_pre_cutover.py",
+      "tests/v3/test_v3_rotation_execute.py",
+      "tests/v3/test_skill_manifest_sandbox.py",
+      "tests/v3/test_supply_chain.py",
+      "tests/v3/test_span_evaluation.py"
     ]
   },
   "golden_sets": {
@@ -67,7 +104,8 @@
       "tests/v3/test_compat_replay.py"
     ],
     "memory": [
-      "tests/v3/test_core_state.py"
+      "tests/v3/test_core_state.py",
+      "tests/v3/test_memory_lifecycle.py"
     ],
     "tool": [
       "tests/v3/test_compat_http_contract_runner.py"
@@ -80,7 +118,11 @@
     ]
   },
   "side_effect_test_targets": [
-    "tests/v3/test_compat_side_effects.py"
+    "tests/v3/test_compat_side_effects.py",
+    "tests/v3/test_a2a_adapter.py",
+    "tests/v3/test_v3_rotation_execute.py",
+    "tests/v3/test_mcp_conformance.py",
+    "tests/v3/test_skill_manifest_sandbox.py"
   ],
   "golden_flow_ids": [
     "osc_preview_range_download_v1",

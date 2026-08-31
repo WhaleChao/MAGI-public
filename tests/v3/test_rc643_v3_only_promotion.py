@@ -46,9 +46,14 @@ def test_rc643_gate_has_no_legacy_v2_or_retired_probe_requirement() -> None:
     assert retired.isdisjoint(gates["required_evidence"])
     assert gates["promotion_thresholds"]["offline_replay_independent_passes"] == 1
     assert gates["promotion_thresholds"]["minimum_isolated_live_validation_runs"] == 1
+    assert gates["v3_rotation_drill"] == {
+        "schema_version": 1,
+        "required_cold_rollback_runs": 3,
+        "production_active_marker_mode": "read_only",
+    }
 
 
-def test_release_quality_suite_does_not_execute_retired_cutover_campaigns() -> None:
+def test_release_quality_suite_excludes_retired_v2_campaigns_and_keeps_v3_gates() -> None:
     suites = json.loads(
         (ROOT / "config/v3_release_quality_suites.json").read_text(encoding="utf-8")
     )
@@ -58,11 +63,37 @@ def test_release_quality_suite_does_not_execute_retired_cutover_campaigns() -> N
         for target in group
     }
     retired_targets = {
-        "tests/v3/test_pre_cutover.py",
         "tests/v3/test_provisional_resource_window_execute.py",
         "tests/v3/test_isolated_live_execute.py",
+    }
+    active_v3_gate_targets = {
+        "tests/v3/test_pre_cutover.py",
         "tests/v3/test_release_gate.py",
     }
 
     assert suites["legacy_v2_validation"]["mode"] == "disabled"
     assert retired_targets.isdisjoint(targets)
+    assert active_v3_gate_targets <= targets
+
+
+def test_active_gate_baseline_matches_generated_route_and_schedule_inventory() -> None:
+    gates = json.loads(
+        (ROOT / "config/v3_cutover_gates.json").read_text(encoding="utf-8")
+    )
+    portable = json.loads(
+        (ROOT / "docs/architecture/v3/generated/runtime_inventory.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    routes = json.loads(
+        (ROOT / "docs/architecture/v3/generated/v2_runtime_routes.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    baseline = gates["baseline"]
+
+    assert baseline["runtime_routes"] == routes["counts"]["total"]
+    assert baseline["main_routes"] == routes["counts"]["5002"]
+    assert baseline["tools_routes"] == routes["counts"]["5003"]
+    assert baseline["cron_jobs"] == portable["counts"]["cron_jobs"]
+    assert baseline["enabled_cron_jobs"] == portable["counts"]["enabled_cron_jobs"]

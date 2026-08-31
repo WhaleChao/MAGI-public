@@ -33,14 +33,22 @@ def _function_lines(path: Path) -> dict[str, list[int]]:
 
 
 def refresh_route_review_sources(payload: dict[str, Any], root: Path) -> dict[str, Any]:
-    """Bind every review row to the exact AST definition for its endpoint."""
+    """Resolve every review row to its current AST endpoint definition.
+
+    ``v2_handler_source`` is accepted only while reading archived manifests.
+    Newly rendered active manifests use ``handler_source``.  The line number is
+    a diagnostic hint; callers deciding release eligibility must compare the
+    source path and endpoint identity rather than treating line movement as an
+    interface change.
+    """
 
     refreshed = copy.deepcopy(payload)
     cache: dict[str, dict[str, list[int]]] = {}
     rows = [*refreshed.get("reviews", []), *refreshed.get("unreviewed", [])]
     for row in rows:
         try:
-            source_path, _old_line = str(row["v2_handler_source"]).rsplit(":", 1)
+            raw_source = row.get("handler_source", row.get("v2_handler_source"))
+            source_path, _old_line = str(raw_source).rsplit(":", 1)
             endpoint_name = str(row["endpoint"]).rsplit(".", 1)[-1]
         except (KeyError, ValueError) as exc:
             raise SourceAnchorError("route review lacks endpoint/source identity") from exc
@@ -51,7 +59,8 @@ def refresh_route_review_sources(payload: dict[str, Any], root: Path) -> dict[st
             raise SourceAnchorError(
                 f"expected one definition for {endpoint_name!r} in {source_path}, got {matches}"
             )
-        row["v2_handler_source"] = f"{source_path}:{matches[0]}"
+        row.pop("v2_handler_source", None)
+        row["handler_source"] = f"{source_path}:{matches[0]}"
     return refreshed
 
 

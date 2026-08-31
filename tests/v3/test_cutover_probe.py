@@ -362,6 +362,22 @@ def test_exact_host_executable_with_spaces_is_recognized() -> None:
     )
 
 
+def test_active_release_service_launcher_and_child_are_host_singletons() -> None:
+    app = Path.home() / "Library" / "Application Support" / "MAGI"
+    launcher = app / "bin" / "magi-active-release-service.py"
+    release = app / "releases" / "v3-current"
+
+    assert _host_singleton_process_identity(
+        f"/usr/bin/python3 {launcher} paperclip-share-gateway"
+    ) == ("share_gateway", f"{launcher}:paperclip-share-gateway")
+    assert _host_singleton_process_identity(
+        f"/usr/bin/python3 -B {release / 'scripts/share_gateway.py'} --port 5014"
+    ) == ("share_gateway", str(release / "scripts/share_gateway.py"))
+    assert _host_singleton_process_identity(
+        f"/usr/bin/python3 {launcher} not-allowlisted"
+    ) is None
+
+
 def test_malformed_launchd_plist_is_preserved_as_fail_closed_probe_error(
     tmp_path: Path, monkeypatch
 ) -> None:

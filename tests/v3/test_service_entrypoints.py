@@ -362,6 +362,26 @@ def test_default_process_probe_converts_repeated_timeout_to_fail_closed_error(
     assert calls == [5, 8, 12]
 
 
+def test_default_process_probe_tolerates_unrelated_non_utf8_argv(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        assert kwargs["text"] is True
+        assert kwargs["errors"] == "replace"
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            "  41   41 /usr/bin/example-\ufffd\n",
+            "",
+        )
+
+    monkeypatch.setattr(subprocess, "run", run)
+
+    assert _default_process_reader() == (
+        ProcessRecord(41, 41, "/usr/bin/example-\ufffd"),
+    )
+
+
 def test_role_lease_records_and_verifies_same_release_pid_process_group(
     tmp_path: Path,
 ) -> None:

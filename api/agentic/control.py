@@ -32,11 +32,13 @@ from api.agentic.contracts import (
 from api.agentic.planner import build_plan, cancel_plan, confirm_step, transition_step
 from api.routing.office_cognition import OfficeUnderstanding, assess_office_request
 from api.runtime_paths import get_agent_dir
+from magi_v3.telemetry import receipt_trace_id
 
 
 _SCHEMA = "magi.controlled-autonomy/v1"
 _PLAN_ID_RE = re.compile(r"\Aca-[0-9]{8}-[0-9]{6}-[a-f0-9]{8}\Z")
 _TOKEN_RE = re.compile(r"\A[a-f0-9]{12}\Z")
+_TRACE_ID_RE = re.compile(r"\A[0-9a-f]{32}\Z")
 _COMMAND_RE = re.compile(
     r"\A\s*(?P<verb>確認|核准|取消|狀態|查詢|列出)\s*"
     r"(?:受控自主計畫|自主計畫)"
@@ -238,6 +240,7 @@ class ControlledAutonomyStore:
                     receipt = {
                         "schema": _SCHEMA,
                         "observed_at": _iso(_utcnow()),
+                        "trace_id": receipt_trace_id(),
                         "handoff_success": False,
                         "business_completion_attested": False,
                         "recovery_action": "verify_registered_workflow_state_before_retry",
@@ -500,8 +503,18 @@ class ControlledAutonomyStore:
             connection.commit()
         return DispatchLease(plan_id=plan.plan_id, original_request=str(row["goal"]), plan=plan)
 
-    def finish_dispatch(self, lease: DispatchLease, *, success: bool, reply: str) -> WorkflowPlan:
+    def finish_dispatch(
+        self,
+        lease: DispatchLease,
+        *,
+        success: bool,
+        reply: str,
+        trace_id: str | None = None,
+    ) -> WorkflowPlan:
         now = _utcnow()
+        bound_trace_id = str(trace_id or receipt_trace_id()).strip().lower()
+        if not _TRACE_ID_RE.fullmatch(bound_trace_id):
+            raise ValueError("controlled autonomy receipt trace_id is invalid")
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
@@ -516,6 +529,7 @@ class ControlledAutonomyStore:
             receipt = {
                 "schema": _SCHEMA,
                 "observed_at": _iso(now),
+                "trace_id": bound_trace_id,
                 "reply_sha256": _reply_hash(reply),
                 "reply_present": bool(str(reply or "").strip()),
                 "handoff_success": bool(success),
@@ -563,13 +577,26 @@ class ControlledAutonomyService:
     def __init__(self, store: ControlledAutonomyStore | None = None) -> None:
         self.store = store or ControlledAutonomyStore()
 
-    def propose(self, message: str, *, user_id: str, platform: str, has_attachment: bool = False) -> PlanProposal | None:
+    def propose(
+        self,
+        message: str,
+        *,
+        user_id: str,
+        platform: str,
+        has_attachment: bool = False,
+        ttl_minutes: int = 30,
+    ) -> PlanProposal | None:
         understanding = assess_office_request(message, has_attachment=has_attachment)
         if understanding.envelope.side_effect not in {SideEffectLevel.WRITE, SideEffectLevel.DESTRUCTIVE}:
             return None
         if understanding.needs_clarification:
             return None
-        return self.store.create(understanding, user_id=user_id, platform=platform)
+        return self.store.create(
+            understanding,
+            user_id=user_id,
+            platform=platform,
+            ttl_minutes=ttl_minutes,
+        )
 
     def command(self, message: str, *, user_id: str, platform: str) -> tuple[str, DispatchLease | None] | None:
         command = parse_controlled_command(message)

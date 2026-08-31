@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -19,8 +20,52 @@ def _isolate_cron_snapshot_binding(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("MAGI_CRON_JOBS_SOURCE_SHA256", raising=False)
 
 
-def test_policy_is_hash_bound_and_preserves_global_resource_caps() -> None:
-    policy = load_cron_dispatch_policy(ROOT)
+def _synthetic_cron_payload() -> bytes:
+    """Build a complete, source-independent fixture for the V3 policy unit tests."""
+
+    policy = json.loads(
+        (ROOT / "config/v3_schedule_dispatch_policy.json").read_text(encoding="utf-8")
+    )
+    required = {
+        *(str(value) for value in policy["batch_job_ids"]),
+        *(str(value) for value in policy["durable_backlog_coalescing_job_ids"]),
+        *(str(value) for value in policy["phase_delay_seconds"]),
+    }
+    expected = int(policy["enabled_jobs_expected"])
+    assert len(required) <= expected
+    filler = [f"fixture_job_{index:03d}" for index in range(expected - len(required))]
+    rows: list[dict[str, Any]] = [
+        {
+            "id": job_id,
+            "enabled": True,
+            "cron": "0 0 * * *",
+            "command": f"{ROOT}/venv/bin/python3 {ROOT}/scripts/{job_id}.py",
+        }
+        for job_id in sorted(required) + filler
+    ]
+    return (json.dumps(rows, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+
+
+def _write_bound_policy(root: Path, payload: bytes) -> str:
+    (root / "config").mkdir(parents=True, exist_ok=True)
+    policy = json.loads(
+        (ROOT / "config/v3_schedule_dispatch_policy.json").read_text(encoding="utf-8")
+    )
+    source_sha = hashlib.sha256(payload).hexdigest()
+    policy["cron_jobs_sha256"] = source_sha
+    (root / "config/v3_schedule_dispatch_policy.json").write_text(
+        json.dumps(policy), encoding="utf-8"
+    )
+    return source_sha
+
+
+def test_policy_is_hash_bound_and_preserves_global_resource_caps(tmp_path: Path) -> None:
+    root = tmp_path / "release"
+    payload = _synthetic_cron_payload()
+    _write_bound_policy(root, payload)
+    (root / "cron_jobs.json").write_bytes(payload)
+
+    policy = load_cron_dispatch_policy(root)
 
     assert policy.max_workers == 4
     assert policy.lane_caps == {"light": 2, "batch": 2, "maintenance": 2}
@@ -38,17 +83,15 @@ def test_policy_loads_hash_bound_external_snapshot_without_release_root_cron(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = tmp_path / "immutable-release"
-    (root / "config").mkdir(parents=True)
-    (root / "config" / "v3_schedule_dispatch_policy.json").write_bytes(
-        (ROOT / "config" / "v3_schedule_dispatch_policy.json").read_bytes()
-    )
+    payload = _synthetic_cron_payload()
+    source_sha = _write_bound_policy(root, payload)
     snapshot = tmp_path / "runtime" / "cron_jobs.snapshot.json"
     snapshot.parent.mkdir()
-    snapshot.write_bytes((ROOT / "cron_jobs.json").read_bytes())
+    snapshot.write_bytes(payload)
     snapshot_sha = hashlib.sha256(snapshot.read_bytes()).hexdigest()
     monkeypatch.setenv("MAGI_CRON_JOBS_FILE", str(snapshot))
     monkeypatch.setenv("MAGI_CRON_JOBS_SHA256", snapshot_sha)
-    monkeypatch.setenv("MAGI_CRON_JOBS_SOURCE_SHA256", snapshot_sha)
+    monkeypatch.setenv("MAGI_CRON_JOBS_SOURCE_SHA256", source_sha)
 
     policy = load_cron_dispatch_policy(root)
 
@@ -60,24 +103,17 @@ def test_policy_accepts_rebased_external_snapshot_with_distinct_trusted_source_h
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = tmp_path / "immutable-release"
-    (root / "config").mkdir(parents=True)
-    policy_path = ROOT / "config" / "v3_schedule_dispatch_policy.json"
-    (root / "config" / policy_path.name).write_bytes(policy_path.read_bytes())
-    source_payload = (ROOT / "cron_jobs.json").read_bytes()
-    source_sha = hashlib.sha256(source_payload).hexdigest()
+    source_payload = _synthetic_cron_payload()
+    source_sha = _write_bound_policy(root, source_payload)
     jobs = json.loads(source_payload.decode("utf-8"))
     source_root = str(ROOT)
-    configured_source_root = str(ROOT.parent / "source-v3-current")
     rebased_job = next(
         job
         for job in jobs
         if source_root in str(job.get("command") or "")
-        or configured_source_root in str(job.get("command") or "")
     )
     original_command = rebased_job["command"]
-    rebased_job["command"] = original_command.replace(
-        configured_source_root, "/immutable/releases/magi-v3"
-    ).replace(source_root, "/immutable/releases/magi-v3")
+    rebased_job["command"] = original_command.replace(source_root, "/immutable/releases/magi-v3")
     assert rebased_job["command"] != original_command
     snapshot = tmp_path / "runtime" / "cron_jobs.v3.json"
     snapshot.parent.mkdir()
@@ -97,13 +133,11 @@ def test_external_snapshot_binding_cannot_fall_back_or_bypass_policy(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = tmp_path / "release"
-    (root / "config").mkdir(parents=True)
-    (root / "config" / "v3_schedule_dispatch_policy.json").write_bytes(
-        (ROOT / "config" / "v3_schedule_dispatch_policy.json").read_bytes()
-    )
-    (root / "cron_jobs.json").write_bytes((ROOT / "cron_jobs.json").read_bytes())
+    payload = _synthetic_cron_payload()
+    _write_bound_policy(root, payload)
+    (root / "cron_jobs.json").write_bytes(payload)
     snapshot = tmp_path / "external.json"
-    snapshot.write_bytes((ROOT / "cron_jobs.json").read_bytes() + b"\n")
+    snapshot.write_bytes(payload + b"\n")
     snapshot_sha = hashlib.sha256(snapshot.read_bytes()).hexdigest()
     monkeypatch.setenv("MAGI_CRON_JOBS_FILE", str(snapshot))
 
@@ -123,12 +157,10 @@ def test_external_snapshot_rejects_relative_path_and_symlink(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = tmp_path / "release"
-    (root / "config").mkdir(parents=True)
-    (root / "config" / "v3_schedule_dispatch_policy.json").write_bytes(
-        (ROOT / "config" / "v3_schedule_dispatch_policy.json").read_bytes()
-    )
+    payload = _synthetic_cron_payload()
+    _write_bound_policy(root, payload)
     source = tmp_path / "cron_jobs.json"
-    source.write_bytes((ROOT / "cron_jobs.json").read_bytes())
+    source.write_bytes(payload)
     source_sha = hashlib.sha256(source.read_bytes()).hexdigest()
     monkeypatch.setenv("MAGI_CRON_JOBS_FILE", "cron_jobs.json")
     monkeypatch.setenv("MAGI_CRON_JOBS_SHA256", source_sha)
@@ -146,10 +178,11 @@ def test_external_snapshot_rejects_relative_path_and_symlink(
 
 def test_policy_binding_and_phase_delays_fail_closed(tmp_path: Path) -> None:
     root = tmp_path / "release"
-    (root / "config").mkdir(parents=True)
-    (root / "cron_jobs.json").write_bytes((ROOT / "cron_jobs.json").read_bytes())
+    payload = _synthetic_cron_payload()
+    _write_bound_policy(root, payload)
+    (root / "cron_jobs.json").write_bytes(payload)
     policy = json.loads(
-        (ROOT / "config" / "v3_schedule_dispatch_policy.json").read_text(encoding="utf-8")
+        (root / "config" / "v3_schedule_dispatch_policy.json").read_text(encoding="utf-8")
     )
     policy["cron_jobs_sha256"] = "0" * 64
     (root / "config" / "v3_schedule_dispatch_policy.json").write_text(
@@ -158,10 +191,9 @@ def test_policy_binding_and_phase_delays_fail_closed(tmp_path: Path) -> None:
     with pytest.raises(CronDispatchPolicyError, match="binding drifted"):
         load_cron_dispatch_policy(root)
 
-    policy["cron_jobs_sha256"] = json.loads(
-        (ROOT / "config" / "v3_schedule_dispatch_policy.json").read_text(encoding="utf-8")
-    )["cron_jobs_sha256"]
-    policy["phase_delay_seconds"]["job_pdf_namer_nightly"] = 6 * 3600 + 1
+    policy["cron_jobs_sha256"] = hashlib.sha256(payload).hexdigest()
+    bounded_job_id = next(iter(policy["phase_delay_seconds"]))
+    policy["phase_delay_seconds"][bounded_job_id] = 6 * 3600 + 1
     (root / "config" / "v3_schedule_dispatch_policy.json").write_text(
         json.dumps(policy), encoding="utf-8"
     )

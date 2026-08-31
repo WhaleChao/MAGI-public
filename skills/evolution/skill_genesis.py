@@ -22,6 +22,7 @@ import importlib.util
 import threading
 from typing import Optional
 from datetime import datetime
+from pathlib import Path
 
 # Ensure we import MAGI's local `skills.*` package (not an unrelated installed package).
 # `__file__` = .../MAGI/skills/evolution/skill_genesis.py
@@ -68,6 +69,8 @@ def _skill_runtime_default(env_name: str) -> bool:
 
 
 def _skill_auto_pip_enabled() -> bool:
+    if (os.environ.get("MAGI_V3_RELEASE_MANIFEST") or "").strip():
+        return False
     if "MAGI_SKILL_AUTO_PIP" in os.environ:
         return _env_bool("MAGI_SKILL_AUTO_PIP", False)
     return _skill_runtime_default("MAGI_SKILL_AUTO_INSTALL_DEPS_DEFAULT")
@@ -272,6 +275,17 @@ def _safe_write_skill_file(skill_folder: str, filename: str, content: str, reaso
     try:
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(content)
+        if filename == "action.py":
+            try:
+                from magi_v3.skill_manifest import write_candidate_manifest
+
+                write_candidate_manifest(skill_dir=Path(skill_dir), skill_id=skill_folder)
+            except Exception as exc:
+                return {
+                    "success": False,
+                    "error": f"skill_manifest_generation_failed:{exc}",
+                    "blocked": True,
+                }
         return {"success": True, "error": None, "blocked": False}
     except Exception as e:
         return {"success": False, "error": str(e), "blocked": False}
@@ -542,8 +556,32 @@ def _skill_preexec():
         return None
 
 
-def _isolated_run(cmd: list[str], cwd: str, timeout_sec: int):
+def _isolated_run(
+    cmd: list[str],
+    cwd: str,
+    timeout_sec: int,
+    *,
+    require_approved: bool = False,
+):
     start = time.time()
+    resolved_cwd = Path(cwd).resolve(strict=False)
+    resolved_base = Path(BASE_SKILLS_DIR).resolve(strict=False)
+    mutable_skill = resolved_cwd != resolved_base and resolved_base not in resolved_cwd.parents
+    if mutable_skill:
+        from magi_v3.skill_sandbox import run_manifested_skill
+
+        catalog = Path(
+            os.environ.get("MAGI_APPROVED_SKILL_CATALOG", "").strip()
+            or os.path.join(_MAGI_ROOT, "config", "skills", "approved_skill_catalog.json")
+        )
+        return run_manifested_skill(
+            cmd,
+            skill_dir=resolved_cwd,
+            env=_build_skill_exec_env(),
+            timeout_seconds=timeout_sec,
+            require_approved=require_approved,
+            catalog_path=catalog,
+        )
     proc = subprocess.run(
         cmd,
         cwd=cwd,
@@ -649,6 +687,13 @@ def _auto_pip_allowed(package_name: str) -> bool:
 
 
 def _pip_install_package(package_name: str) -> dict:
+    if (os.environ.get("MAGI_V3_RELEASE_MANIFEST") or "").strip():
+        return {
+            "success": False,
+            "blocked": True,
+            "reason": "runtime_install_forbidden_in_sealed_release",
+            "error": "skill dependencies must be locked and installed before sealing",
+        }
     pkg = (package_name or "").strip()
     if not pkg:
         return {"success": False, "error": "empty package name"}
@@ -1561,6 +1606,19 @@ def _auto_runtime_repair_action(skill_dir: str, need_description: str, max_round
 
         with open(action_path, "w", encoding="utf-8") as f:
             f.write(verify["code"])
+        try:
+            from magi_v3.skill_manifest import write_candidate_manifest
+
+            write_candidate_manifest(skill_dir=Path(skill_dir), skill_id=Path(skill_dir).name)
+        except Exception as exc:
+            return {
+                "success": False,
+                "repaired": repaired,
+                "smoke": smoke,
+                "rounds": idx,
+                "logs": logs,
+                "error": f"SkillManifest refresh failed: {exc}",
+            }
         current = verify["code"]
         repaired = True
 
@@ -2533,7 +2591,12 @@ def run_skill_action(
                 )
         for cmd in commands:
             try:
-                r = _isolated_run(cmd, skill_dir, timeout_sec)
+                r = _isolated_run(
+                    cmd,
+                    skill_dir,
+                    timeout_sec,
+                    require_approved=channel in {"live", "stable"},
+                )
                 traces.append({"cmd": " ".join(cmd), "rc": r["rc"], "stdout": r["stdout"][:600], "stderr": r["stderr"][:240], "duration_ms": r["duration_ms"]})
                 if r["rc"] == 0:
                     return {
@@ -2568,7 +2631,12 @@ def run_skill_action(
                                 "installed": dep_fix.get("installed", []),
                             }
                         )
-                        rerun = _isolated_run(cmd, skill_dir, timeout_sec)
+                        rerun = _isolated_run(
+                            cmd,
+                            skill_dir,
+                            timeout_sec,
+                            require_approved=channel in {"live", "stable"},
+                        )
                         traces.append({"cmd": " ".join(cmd) + " [retry]", "rc": rerun["rc"], "stdout": rerun["stdout"][:600], "stderr": rerun["stderr"][:240], "duration_ms": rerun["duration_ms"]})
                         if rerun["rc"] == 0:
                             return {

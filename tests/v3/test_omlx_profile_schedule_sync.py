@@ -28,6 +28,17 @@ def test_model_switch_schedule_matches_profile_policy() -> None:
     assert jobs["job_omlx_switch_night"]["cron"] == NIGHT_SWITCH_CRON
 
 
+def test_model_switch_binds_raw_runtime_to_inert_bytecode_cache() -> None:
+    switch = (
+        Path(__file__).resolve().parents[2] / "config" / "bin" / "omlx_switch_model.sh"
+    ).read_text(encoding="utf-8")
+    assert switch.count("plist_set_env PYTHONDONTWRITEBYTECODE 1") == 1
+    assert switch.count("plist_set_env PYTHONPYCACHEPREFIX /dev/null") == 1
+    auto_start = switch.index('if [ "$MODE" = "auto" ]; then')
+    first_auto_exit = switch.index("exit 0", auto_start)
+    assert auto_start < switch.index("ensure_python_bytecode_policy", auto_start) < first_auto_exit
+
+
 def test_day_boundary_has_immediate_switch_and_bounded_grace() -> None:
     assert expected_profile_for_minutes(394)[0] == "night"
     assert expected_profile_for_minutes(395)[0] == "day"

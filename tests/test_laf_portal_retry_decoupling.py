@@ -140,6 +140,36 @@ def test_portal_retry_fixture_download_is_confined(tmp_path):
     ]
 
 
+def test_portal_retry_write_authority_is_narrowly_confined_to_marked_fixture(
+    tmp_path, monkeypatch
+):
+    from casper_ecosystem.law_firm_orchestrators.laf_orchestrator import (
+        _resolve_schedule_fixture_case_folder_for_write,
+    )
+
+    fixture = tmp_path / "fixture"
+    case = fixture / "cases" / "2099-0003-test"
+    outside = tmp_path / "outside"
+    case.mkdir(parents=True)
+    outside.mkdir()
+    (fixture / ".magi-v3-schedule-fixture").write_text(
+        "job_laf_portal_retry_once\n", encoding="utf-8"
+    )
+    provider = fixture / "workflow-provider.json"
+    provider.write_text(
+        json.dumps({"allowed_workflows": ["attachment_retry"]}), encoding="utf-8"
+    )
+    monkeypatch.setenv("MAGI_V3_REALISM_SANDBOX", "1")
+    monkeypatch.setenv("MAGI_V3_SCHEDULE_FIXTURE_ROOT", str(fixture))
+    monkeypatch.setenv("MAGI_LAF_WORKFLOW_PROVIDER_FIXTURE", str(provider))
+
+    assert _resolve_schedule_fixture_case_folder_for_write(str(case)) == str(case)
+    assert _resolve_schedule_fixture_case_folder_for_write(str(outside)) == ""
+
+    (fixture / ".magi-v3-schedule-fixture").write_text("wrong-job\n", encoding="utf-8")
+    assert _resolve_schedule_fixture_case_folder_for_write(str(case)) == ""
+
+
 def test_portal_retry_real_job_body_runs_in_disposable_fixture(tmp_path):
     from scripts.v3_validation.schedule_body_registry import _prepare_fixture
 

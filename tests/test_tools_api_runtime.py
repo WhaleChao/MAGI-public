@@ -14,6 +14,12 @@ from api.permissions import (
     PermissionPolicy,
     deny_command,
 )
+from magi_v3.skill_manifest import (
+    CATALOG_SCHEMA,
+    load_manifest,
+    manifest_digest,
+    write_candidate_manifest,
+)
 
 _AUTH_HEADERS = {"X-API-Key": "test-key"}
 
@@ -230,6 +236,24 @@ def test_tools_api_consumes_and_runs_overlay_only_skill_with_path_permission(
         "import json\nprint(json.dumps({'marker': 'overlay-run'}))\n",
         encoding="utf-8",
     )
+    write_candidate_manifest(skill_dir=skill, skill_id="overlay-api-demo")
+    manifest = load_manifest(skill)
+    catalog = tmp_path / "approved-skill-catalog.json"
+    catalog.write_text(
+        json.dumps(
+            {
+                "schema": CATALOG_SCHEMA,
+                "release_binding": "test-release",
+                "skills": {
+                    "overlay-api-demo": {
+                        "enabled": True,
+                        "manifest_sha256": manifest_digest(manifest),
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
     (overlay_root / "definitions.json").write_text(
         json.dumps(
             {
@@ -257,6 +281,7 @@ def test_tools_api_consumes_and_runs_overlay_only_skill_with_path_permission(
     )
     monkeypatch.setattr(overlay, "_ROOT", release)
     monkeypatch.setenv("MAGI_SKILL_OVERLAY_DIR", str(overlay_root))
+    monkeypatch.setenv("MAGI_APPROVED_SKILL_CATALOG", str(catalog))
     monkeypatch.setattr(genesis, "BASE_SKILLS_DIR", str(release / "skills"))
     monkeypatch.setattr(genesis, "SKILLS_DIR", str(overlay_root))
     monkeypatch.setattr(genesis, "SKILL_VERSIONS_DIR", str(overlay_root / ".versions"))
@@ -280,6 +305,21 @@ def test_tools_api_consumes_and_runs_overlay_only_skill_with_path_permission(
 
     enforcer = _CapturingEnforcer()
     monkeypatch.setattr(tools_api, "_TOOLS_PERMISSION_ENFORCER", enforcer)
+    from magi_v3 import skill_sandbox
+
+    sandbox_calls = []
+
+    def _sandbox_contract(command, **kwargs):
+        sandbox_calls.append((list(command), dict(kwargs)))
+        return {
+            "rc": 0,
+            "stdout": json.dumps({"marker": "overlay-run"}),
+            "stderr": "",
+            "duration_ms": 1,
+            "sandbox": {"ok": True, "kind": "contract_test"},
+        }
+
+    monkeypatch.setattr(skill_sandbox, "run_manifested_skill", _sandbox_contract)
 
     definitions = client.get("/definitions", headers=_AUTH_HEADERS)
     assert definitions.status_code == 200
@@ -301,6 +341,10 @@ def test_tools_api_consumes_and_runs_overlay_only_skill_with_path_permission(
     assert response.status_code == 200
     assert "overlay-run" in response.get_json()["output"]
     assert enforcer.paths == [str(action)]
+    assert len(sandbox_calls) == 1
+    assert sandbox_calls[0][1]["skill_dir"] == skill.resolve()
+    assert sandbox_calls[0][1]["require_approved"] is True
+    assert sandbox_calls[0][1]["catalog_path"] == catalog
 
     allowed, decision = tools_api._check_tool_access(
         "skill:not-installed",

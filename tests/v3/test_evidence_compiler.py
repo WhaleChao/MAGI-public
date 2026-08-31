@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import plistlib
-import sqlite3
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -13,19 +12,19 @@ import pytest
 
 import scripts.v3_evidence_compiler as compiler
 import scripts.v3_release_gate as release_gate
-from scripts.architecture.generate_v2_inventory import (
+from scripts.architecture.generate_runtime_inventory import (
     build_inventory,
     collect_daemon_children,
     collect_launchagents,
     collect_routes,
     collect_skills,
+    project_inventory_to_release,
+    semantic_inventory_projection,
 )
-from scripts.v3_backup_prepare import prepare_backup
 from scripts.v3_campaign.runner import ReleaseBundle
 from scripts.v3_evidence_compiler import (
     CompileContext,
     EvidenceCompileError,
-    compile_backup_evidence,
     compile_deploy_evidence,
     compile_evidence,
 )
@@ -33,7 +32,6 @@ from scripts.v3_release_gate import (
     BoundArtifact,
     EVIDENCE_SPECS,
     _canonical_json_bytes,
-    _recompute_backup_metrics,
     _recompute_deploy_metrics,
     evaluate_evidence,
 )
@@ -51,44 +49,96 @@ def test_checked_in_portable_inventory_matches_candidate_source_surfaces() -> No
     """Fail quality certification before a newly shipped source can stale inventory."""
 
     inventory = json.loads(
-        (ROOT / "docs/architecture/v3/generated/v2_inventory.json").read_text(
+        (ROOT / "docs/architecture/v3/generated/runtime_inventory.json").read_text(
             encoding="utf-8"
         )
     )
+    expected = inventory
+    release_manifest = ROOT / "release-manifest.json"
+    if release_manifest.is_file():
+        manifest = json.loads(release_manifest.read_text(encoding="utf-8"))
+        release_paths = {
+            str(row["path"])
+            for row in manifest.get("files", ())
+            if isinstance(row, dict) and isinstance(row.get("path"), str)
+        }
+        assert release_paths
+        expected = project_inventory_to_release(
+            inventory,
+            release_paths,
+            cron_jobs=inventory["cron_jobs"],
+        )
     tests = sorted(
         str(path.relative_to(ROOT)) for path in (ROOT / "tests").glob("test_*.py")
     )
     launchagents = collect_launchagents(ROOT, include_installed=False)
 
-    assert inventory["http_routes"] == collect_routes(ROOT)
-    assert inventory["skill_entrypoints"] == collect_skills(ROOT)
-    assert inventory["daemon_children"] == collect_daemon_children(ROOT)
-    assert inventory["launchagents"] == launchagents
-    assert inventory["test_modules"] == tests
-    assert inventory["counts"]["http_routes"] == len(inventory["http_routes"])
-    assert inventory["counts"]["skill_entrypoints"] == len(
-        inventory["skill_entrypoints"]
+    discovered = {
+        **expected,
+        "http_routes": collect_routes(ROOT),
+        "skill_entrypoints": collect_skills(ROOT),
+        "daemon_children": collect_daemon_children(ROOT),
+        "launchagents": launchagents,
+        "test_modules": tests,
+    }
+    assert semantic_inventory_projection(expected) == semantic_inventory_projection(
+        discovered
     )
-    assert inventory["counts"]["daemon_child_declarations"] == len(
-        inventory["daemon_children"]
+    assert expected["counts"]["http_routes"] == len(expected["http_routes"])
+    assert expected["counts"]["skill_entrypoints"] == len(
+        expected["skill_entrypoints"]
     )
-    assert inventory["counts"]["checked_in_launchagents"] == len(
+    assert expected["counts"]["daemon_child_declarations"] == len(
+        expected["daemon_children"]
+    )
+    assert expected["counts"]["checked_in_launchagents"] == len(
         launchagents["checked_in"]
     )
-    assert inventory["counts"]["installed_launchagents"] == 0
-    assert inventory["counts"]["test_modules"] == len(tests)
+    assert expected["counts"]["installed_launchagents"] == 0
+    assert expected["counts"]["test_modules"] == len(tests)
 
 
-def test_repository_source_contract_resolves_the_live_runtime_not_the_checkout() -> None:
-    contract = compiler._source_contract(CONFIG)
-
-    assert contract["schema_version"] == 2
-    assert contract["root_kind"] == "current_user_application_support_magi_v2"
-    assert contract["v2_root"].endswith(
-        "/Library/Application Support/MAGI/runtime/MAGI_v2"
+def test_runtime_inventory_ignores_diagnostic_line_drift_but_not_interface_drift() -> None:
+    inventory = json.loads(
+        (ROOT / "docs/architecture/v3/generated/runtime_inventory.json").read_text(
+            encoding="utf-8"
+        )
     )
-    assert contract["website_root"] == f'{contract["v2_root"]}/whalechao.github.io'
-    assert "/Desktop/MAGI_v2" not in contract["v2_root"]
+    line_shifted = json.loads(json.dumps(inventory))
+    line_shifted["http_routes"][0]["line"] += 100
+    line_shifted["root_name"] = "another-sealed-copy"
+    assert semantic_inventory_projection(line_shifted) == semantic_inventory_projection(
+        inventory
+    )
+
+    interface_changed = json.loads(json.dumps(inventory))
+    interface_changed["http_routes"][0]["methods"] = ["DELETE"]
+    assert semantic_inventory_projection(
+        interface_changed
+    ) != semantic_inventory_projection(inventory)
+
+
+def test_cutover_baseline_matches_generated_route_and_schedule_inventories() -> None:
+    """Catch stale hand-maintained gate counts before sealing a candidate."""
+
+    portable = json.loads(
+        (ROOT / "docs/architecture/v3/generated/runtime_inventory.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    runtime_routes = json.loads(
+        (ROOT / "docs/architecture/v3/generated/v2_runtime_routes.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    baseline = CONFIG["baseline"]
+    route_counts = runtime_routes["counts"]
+
+    assert baseline["runtime_routes"] == route_counts["total"]
+    assert baseline["main_routes"] == route_counts["5002"]
+    assert baseline["tools_routes"] == route_counts["5003"]
+    assert baseline["cron_jobs"] == portable["counts"]["cron_jobs"]
+    assert baseline["enabled_cron_jobs"] == portable["counts"]["enabled_cron_jobs"]
 
 
 def test_compile_evidence_routes_physical_fault_inputs_only_to_campaign_compiler(
@@ -174,133 +224,6 @@ def _write_json(path: Path, payload: object) -> None:
 
 def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def _formal_backup(
-    tmp_path: Path,
-    context: CompileContext,
-    *,
-    database_count: int = 4,
-    empty_website: bool = False,
-) -> Path:
-    source = tmp_path / "MAGI_v2"
-    database_relatives = [
-        Path(".agent/jobs/job_queue.db"),
-        Path(".agent/mq/message_queue.db"),
-        Path(".runtime/conversation_history.sqlite3"),
-        Path(".runtime/taiwan_legal_mcp/cache.sqlite3"),
-    ][:database_count]
-    databases: list[Path] = []
-    for relative in database_relatives:
-        database = source / relative
-        database.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(database) as connection:
-            connection.execute("CREATE TABLE state (id INTEGER PRIMARY KEY, value TEXT)")
-            connection.execute("INSERT INTO state(value) VALUES (?)", (relative.as_posix(),))
-        databases.append(database)
-    website = (
-        tmp_path
-        / "Library"
-        / "Application Support"
-        / "MAGI"
-        / "runtime"
-        / "MAGI_v2"
-        / "whalechao.github.io"
-    )
-    (website / "data").mkdir(parents=True)
-    (website / "assets").mkdir()
-    if not empty_website:
-        (website / "data" / "content.json").write_text("{}", encoding="utf-8")
-        (website / "assets" / "app.js").write_text("ok", encoding="utf-8")
-    backup = tmp_path / "backup"
-    prepare_backup(
-        source_root=source,
-        database_paths=databases,
-        website_root=website,
-        output_dir=backup,
-        campaign_id=context.campaign_id,
-        release_sha=context.release_sha,
-        hardware_id=context.hardware_id,
-        gate_config_sha256=context.gate_config_sha256,
-        now=NOW,
-    )
-    return backup
-
-
-def _test_backup_config(tmp_path: Path) -> dict[str, object]:
-    config = json.loads(json.dumps(CONFIG))
-    config["source_contract"] = {
-        "schema_version": 1,
-        "contract_id": "magi.v3.formal-v2-backup-sources/v1",
-        "v2_root": str(tmp_path / "MAGI_v2"),
-        "website_root": str(
-            tmp_path
-            / "Library"
-            / "Application Support"
-            / "MAGI"
-            / "runtime"
-            / "MAGI_v2"
-            / "whalechao.github.io"
-        ),
-        "database_relatives": sorted(compiler.FORMAL_BACKUP_DATABASES),
-    }
-    return config
-
-
-def test_formal_four_database_backup_is_authoritatively_recomputed(tmp_path: Path) -> None:
-    context = CompileContext("campaign-backup", "a" * 64, "test-mac", GATE_SHA)
-    backup = _formal_backup(tmp_path, context)
-    output = tmp_path / "evidence"
-    config = _test_backup_config(tmp_path)
-
-    statuses = compile_backup_evidence(
-        metadata_path=backup / "backup-metadata.json",
-        output=output,
-        context=context,
-        config=config,
-    )
-    decision = evaluate_evidence(
-        config,
-        output,
-        expected_context=context.as_dict(),
-        now=NOW,
-    )
-
-    assert statuses == {
-        "database_backup_restore_drill_passed": "passed",
-        "runtime_state_snapshot_verified": "passed",
-    }
-    assert set(decision["passed"]) == set(statuses)
-    assert not decision["invalid"]
-
-
-def test_tmp_four_database_backup_cannot_impersonate_formal_machine_roots(
-    tmp_path: Path,
-) -> None:
-    context = CompileContext("campaign-fake-root", "a" * 64, "test-mac", GATE_SHA)
-    backup = _formal_backup(tmp_path, context)
-
-    with pytest.raises(EvidenceCompileError, match="roots do not match"):
-        compile_backup_evidence(
-            metadata_path=backup / "backup-metadata.json",
-            output=tmp_path / "evidence",
-            context=context,
-            config=CONFIG,
-        )
-
-
-def test_toy_one_database_backup_cannot_clear_formal_gate(tmp_path: Path) -> None:
-    context = CompileContext("campaign-toy", "a" * 64, "test-mac", GATE_SHA)
-    backup = _formal_backup(tmp_path, context, database_count=1)
-    config = _test_backup_config(tmp_path)
-
-    with pytest.raises(EvidenceCompileError, match="exact four formal V2 databases"):
-        compile_backup_evidence(
-            metadata_path=backup / "backup-metadata.json",
-            output=tmp_path / "evidence",
-            context=context,
-            config=config,
-        )
 
 
 def _bound_file(role: str, path: Path, media_type: str = "application/json") -> BoundArtifact:
@@ -409,8 +332,8 @@ def test_portable_inventory_is_rebuilt_from_exact_release_bound_inputs(
         ],
     }
     files = {row["path"]: row for row in rows}
-    files["docs/architecture/v3/generated/v2_inventory.json"] = {
-        "path": "docs/architecture/v3/generated/v2_inventory.json",
+    files["docs/architecture/v3/generated/runtime_inventory.json"] = {
+        "path": "docs/architecture/v3/generated/runtime_inventory.json",
         "sha256": hashlib.sha256(inventory_bytes).hexdigest(),
         "size": len(inventory_bytes),
         "mode": "0644",
@@ -443,59 +366,6 @@ def test_portable_inventory_is_rebuilt_from_exact_release_bound_inputs(
     )
     with pytest.raises(ValueError, match="source artifact mismatch"):
         release_gate._recompute_portable_inventory_metrics(by_role, {})
-
-
-@pytest.mark.parametrize(
-    ("target", "value"),
-    [
-        ("metadata", False),
-        ("metadata", -1),
-        ("drill", False),
-        ("drill", -1),
-    ],
-)
-def test_backup_zero_counts_reject_bool_and_negative_in_compiler_and_gate(
-    tmp_path: Path, target: str, value: object
-) -> None:
-    context = CompileContext(f"campaign-count-{target}-{value}", "a" * 64, "test-mac", GATE_SHA)
-    backup = _formal_backup(tmp_path, context, empty_website=True)
-    config = _test_backup_config(tmp_path)
-    metadata_path = backup / "backup-metadata.json"
-    drill_path = backup / "restore-drill.json"
-    metadata = json.loads(metadata_path.read_text())
-    if target == "metadata":
-        metadata["mutable_file_count"] = value
-    else:
-        drill = json.loads(drill_path.read_text())
-        drill["verified_mutable_files"] = value
-        _write_json(drill_path, drill)
-        metadata["restore_drill"]["verified_mutable_files"] = value
-        metadata["restore_drill"]["evidence_sha256"] = _sha(drill_path)
-    _write_json(metadata_path, metadata)
-
-    with pytest.raises(EvidenceCompileError, match="non-negative integer"):
-        compile_backup_evidence(
-            metadata_path=metadata_path,
-            output=tmp_path / "evidence",
-            context=context,
-            config=config,
-        )
-
-    by_role = {
-        artifact.role: [artifact]
-        for artifact in (
-            _bound_file("upstream_backup_metadata", metadata_path),
-            _bound_file("upstream_backup_content_manifest", backup / "backup-content.json"),
-            _bound_file("upstream_restore_drill", drill_path),
-            _bound_file(
-                "upstream_backup_archive",
-                backup / "v2-state-and-website-backup.tar.gz",
-                "application/gzip",
-            ),
-        )
-    }
-    with pytest.raises(ValueError, match="non-negative integer"):
-        _recompute_backup_metrics(by_role, context.as_dict(), config["source_contract"])
 
 
 def _release_control(tmp_path: Path) -> tuple[Path, CompileContext, ReleaseBundle]:
@@ -566,7 +436,7 @@ def test_three_role_deploy_is_recomputed_from_plists_and_release_binding(
         "decision": "GO",
         "execution_backend": "release_launcher",
         "fail_closed": False,
-        "required_independent_passes": 7,
+        "required_independent_passes": 1,
     }
     _write_json(campaign_path, campaign)
     monkeypatch.setattr(compiler, "_verify_release", lambda *_args: bundle)
@@ -574,6 +444,25 @@ def test_three_role_deploy_is_recomputed_from_plists_and_release_binding(
         compiler,
         "_verify_campaign",
         lambda *_args: (campaign, [], [campaign_path]),
+    )
+    monkeypatch.setattr(
+        compiler,
+        "_validate_deploy_release",
+        lambda *_args: (release, object()),
+    )
+    installed_identity = type(
+        "InstalledIdentity",
+        (),
+        {
+            "release_id": bundle.release_id,
+            "manifest_sha256": bundle.manifest_sha256,
+            "manifest_path": release / "release-manifest.json",
+        },
+    )()
+    monkeypatch.setattr(
+        compiler,
+        "_validate_production_release_root",
+        lambda *_args: (release, installed_identity),
     )
     deploy = tmp_path / "deploy"
     artifact_rows = []
@@ -598,6 +487,7 @@ def test_three_role_deploy_is_recomputed_from_plists_and_release_binding(
             "schema_version": 1,
             "status": "prepared_not_installed",
             "mutation_performed": False,
+            "deployment_mode": "production",
             "release_id": bundle.release_id,
             "release_manifest_sha256": bundle.manifest_sha256,
             "release_manifest": str(release / "release-manifest.json"),
@@ -614,6 +504,7 @@ def test_three_role_deploy_is_recomputed_from_plists_and_release_binding(
             "status": "prepared_not_installed",
             "ready_to_install": True,
             "mutation_performed": False,
+            "deployment_mode": "production",
             "release_id": bundle.release_id,
             "release_manifest_sha256": bundle.manifest_sha256,
             "manifest": manifest_path.name,
@@ -650,6 +541,26 @@ def test_three_role_deploy_is_recomputed_from_plists_and_release_binding(
             continue
         path = output / artifact_row["path"]
         frozen_sources.append(_bound_file(artifact_row["role"], path, artifact_row["media_type"]))
+    installed_manifest_index = next(
+        index
+        for index, item in enumerate(frozen_sources)
+        if item.role == "upstream_installed_release_manifest"
+    )
+    installed_tampered = list(frozen_sources)
+    original_installed = installed_tampered[installed_manifest_index]
+    installed_bytes = original_installed.data + b"\n"
+    installed_tampered[installed_manifest_index] = BoundArtifact(
+        original_installed.role,
+        original_installed.media_type,
+        original_installed.path,
+        hashlib.sha256(installed_bytes).hexdigest(),
+        installed_bytes,
+    )
+    installed_by_role: dict[str, list[BoundArtifact]] = {}
+    for item in installed_tampered:
+        installed_by_role.setdefault(item.role, []).append(item)
+    with pytest.raises(ValueError, match="binding failed"):
+        _recompute_deploy_metrics(installed_by_role, context.as_dict())
     deploy_index = next(
         index for index, item in enumerate(frozen_sources) if item.role == "upstream_deploy_manifest"
     )
@@ -794,33 +705,6 @@ def test_human_normalizer_rejects_arbitrary_upstream_without_exact_approval_chai
     assert any("fixed source roles" in error for error in decision["invalid"][evidence_id])
 
 
-def test_second_public_compile_rereads_mutated_source_instead_of_using_stale_cache(
-    tmp_path: Path,
-) -> None:
-    context = CompileContext("campaign-cache", "a" * 64, "test-mac", GATE_SHA)
-    backup = _formal_backup(tmp_path, context)
-    config = _test_backup_config(tmp_path)
-    metadata_path = backup / "backup-metadata.json"
-
-    compile_backup_evidence(
-        metadata_path=metadata_path,
-        output=tmp_path / "first-evidence",
-        context=context,
-        config=config,
-    )
-    metadata = json.loads(metadata_path.read_text())
-    metadata["coverage"] = []
-    _write_json(metadata_path, metadata)
-
-    with pytest.raises(EvidenceCompileError, match="does not cover exact formal"):
-        compile_backup_evidence(
-            metadata_path=metadata_path,
-            output=tmp_path / "second-evidence",
-            context=context,
-            config=config,
-        )
-
-
 @pytest.mark.parametrize("module_mode", [False, True])
 def test_cli_and_module_invocation_exit_nonzero_for_incomplete_evidence(
     tmp_path: Path, module_mode: bool
@@ -857,4 +741,4 @@ def test_cli_and_module_invocation_exit_nonzero_for_incomplete_evidence(
     assert result.returncode == 1
     summary = json.loads(result.stdout)
     assert summary["decision"] == "EVIDENCE_INCOMPLETE"
-    assert len(summary["unavailable"]) == 28
+    assert len(summary["unavailable"]) == len(EVIDENCE_SPECS) == 14

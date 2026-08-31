@@ -21,7 +21,10 @@ from scripts.v3_validation.validation_router import (
 
 def _manifest() -> dict[str, object]:
     return {
-        "v2_regression": {"include_globs": ["tests/test_*.py"]},
+        "legacy_v2_validation": {
+            "mode": "disabled",
+            "reason": "V2 is retired from active promotion",
+        },
         "v3_suites": {
             "unit": ["tests/v3/test_unit.py"],
             "contract": ["tests/v3/test_contract.py"],
@@ -67,11 +70,11 @@ def _nodes() -> list[dict[str, object]]:
 
 
 def _materialize_core_workspace(tmp_path: Path, manifest: dict[str, object]) -> tuple[tuple[str, ...], list[dict[str, object]]]:
-    """Create a tiny source-only workspace with an expanded V2 test."""
+    """Create a tiny source-only workspace for the active V3 test core."""
 
-    paths = {"tests/test_v2_regression.py"}
+    paths: set[str] = set()
     for section, values in manifest.items():
-        if section == "v2_regression":
+        if section == "legacy_v2_validation":
             continue
         if section == "side_effect_test_targets":
             paths.update(values)  # type: ignore[arg-type]
@@ -184,8 +187,8 @@ def test_formal_modes_require_release_binding_and_keep_all_core_sections(tmp_pat
     assert "formal-release-binding-required" in blocked.reasons
 
     manifest = _manifest()
-    # The formal router must expand V2 against the workspace and bind every
-    # expanded core path to a measured node and source hash.
+    # The formal router binds every active V3 core path to a measured node and
+    # source hash; retired V2 tests are deliberately absent.
     core_paths, complete_nodes = _materialize_core_workspace(tmp_path, manifest)
     manifest_path = tmp_path / "config" / "v3_release_quality_suites.json"
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
@@ -423,20 +426,17 @@ def test_formal_release_identity_and_manifest_escape_blocked(tmp_path: Path) -> 
     assert "formal-release-binding-artifact-unavailable" in escaped.reasons
 
 
-def test_v2_glob_rejects_readme_and_symlink_matches(tmp_path: Path) -> None:
+def test_retired_v2_cannot_be_reenabled_in_active_matrix(tmp_path: Path) -> None:
     manifest = _manifest()
-    (tmp_path / "tests").mkdir(parents=True)
-    (tmp_path / "tests" / "readme.txt").write_text("not a test\n", encoding="utf-8")
     invalid = dict(manifest)
-    invalid["v2_regression"] = {"include_globs": ["tests/*"]}
-    with pytest.raises(ValidationRouterError, match=r"test_\*\.py"):
+    invalid["legacy_v2_validation"] = {"mode": "active"}
+    with pytest.raises(ValidationRouterError, match="must be disabled"):
         route("formal_promotion", ["docs/release.md"], manifest=invalid, root=tmp_path)
 
-    outside = tmp_path.parent / f"{tmp_path.name}-outside.py"
-    outside.write_text("def test_escape():\n    pass\n", encoding="utf-8")
-    (tmp_path / "tests" / "test_escape.py").symlink_to(outside)
-    with pytest.raises(ValidationRouterError, match="symlink"):
-        route("formal_promotion", ["docs/release.md"], manifest=manifest, root=tmp_path)
+    stale = dict(manifest)
+    stale["v2_regression"] = {"include_globs": ["tests/test_*.py"]}
+    with pytest.raises(ValidationRouterError, match="retired"):
+        route("formal_promotion", ["docs/release.md"], manifest=stale, root=tmp_path)
 
 
 def test_formal_binding_rejects_invalid_digest_and_commit_formats(tmp_path: Path) -> None:

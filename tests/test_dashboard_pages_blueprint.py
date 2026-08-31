@@ -171,10 +171,10 @@ def test_maintenance_manual_assets_require_login_and_are_exact(tmp_path, monkeyp
     assets = root / "magi_v3" / "manual_assets"
     assets.mkdir(parents=True)
     payloads = {
-        "MAGI_V3_維修百科全書_rc641.html": b"<!doctype html><title>MAGI manual</title>",
-        "MAGI_V3_維修百科全書_rc641.pdf": b"%PDF-1.4\n%%EOF\n",
-        "MAGI_V3_維修百科全書_rc641.md": "# 維修百科\n".encode(),
-        "MAGI_V3_原始碼索引_rc641.json": b'{"schema":"magi.source-index/v1"}',
+        "MAGI_V3_維修百科全書_rc643.html": b"<!doctype html><title>MAGI manual</title>",
+        "MAGI_V3_維修百科全書_rc643.pdf": b"%PDF-1.4\n%%EOF\n",
+        "MAGI_V3_維修百科全書_rc643.md": "# 維修百科\n".encode(),
+        "MAGI_V3_原始碼索引_rc643.json": b'{"schema":"magi.source-index/v1"}',
     }
     for name, data in payloads.items():
         (assets / name).write_bytes(data)
@@ -193,10 +193,10 @@ def test_maintenance_manual_assets_require_login_and_are_exact(tmp_path, monkeyp
         assert client.get(url).status_code in {302, 401}
 
     expected = {
-        "/manual": payloads["MAGI_V3_維修百科全書_rc641.html"],
-        "/manual/pdf": payloads["MAGI_V3_維修百科全書_rc641.pdf"],
-        "/manual/markdown": payloads["MAGI_V3_維修百科全書_rc641.md"],
-        "/manual/source-index.json": payloads["MAGI_V3_原始碼索引_rc641.json"],
+        "/manual": payloads["MAGI_V3_維修百科全書_rc643.html"],
+        "/manual/pdf": payloads["MAGI_V3_維修百科全書_rc643.pdf"],
+        "/manual/markdown": payloads["MAGI_V3_維修百科全書_rc643.md"],
+        "/manual/source-index.json": payloads["MAGI_V3_原始碼索引_rc643.json"],
     }
     for url, body in expected.items():
         response = client.get(url, headers={"X-User-ID": "u1"})
@@ -833,9 +833,13 @@ def test_research_rss_preview_parses_feed_instead_of_showing_xml(tmp_path, monke
 def test_worldmonitor_cron_is_daily():
     import shlex
 
+    import pytest
+
     from magi_v3.external_inputs import load_bound_cron_jobs
 
     root = Path(__file__).resolve().parents[1]
+    if not (root / "cron_jobs.json").is_file():
+        pytest.skip("public snapshot intentionally excludes the private cron definition")
     jobs = list(load_bound_cron_jobs(root, missing_source_default=False).jobs)
     job = next(item for item in jobs if item.get("id") == "job_worldmonitor_intel")
 

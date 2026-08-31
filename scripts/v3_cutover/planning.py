@@ -317,6 +317,18 @@ def create_prepared_plan(
     marker = _regular(deploy_prepared_marker, "deploy prepared marker")
     release = _regular(release_manifest, "release manifest")
     gate_digest = _sha256(gates)
+    gate_document = _object(gates, "gate config")
+    required_evidence = gate_document.get("required_evidence")
+    if (
+        not isinstance(required_evidence, list)
+        or not required_evidence
+        or any(not isinstance(item, str) or not item for item in required_evidence)
+        or len(required_evidence) != len(set(required_evidence))
+        or any(item not in required_evidence for item in ATOMIC_DRILL_EXCLUDED_EVIDENCE)
+    ):
+        raise CutoverError("gate config required evidence contract is invalid")
+    required_count = len(required_evidence)
+    drill_passed_count = required_count - len(ATOMIC_DRILL_EXCLUDED_EVIDENCE)
     report_document = _object(report, "pre-cutover report")
     marker_document = _object(marker, "deploy prepared marker")
     release_document = _object(release, "release manifest")
@@ -334,10 +346,10 @@ def create_prepared_plan(
         # it can never authorize final execution.  The final report is a fresh
         # future path and becomes usable only after it binds this plan's hash.
         expected_report_purpose = "atomic_drill"
-        expected_stage = "cutover_drill_26_of_28"
+        expected_stage = f"cutover_drill_{drill_passed_count}_of_{required_count}"
         expected_decision = "GO_FOR_CUTOVER_DRILL_ONLY"
         expected_excluded = list(ATOMIC_DRILL_EXCLUDED_EVIDENCE)
-        expected_passed = 26
+        expected_passed = drill_passed_count
         if final_pre_cutover_report is None:
             raise CutoverError(
                 "final cutover requires a fresh final pre-cutover report path"
@@ -348,9 +360,9 @@ def create_prepared_plan(
     else:
         expected_report_purpose = execution_purpose
         expected_stage = (
-            "cutover_drill_26_of_28"
+            f"cutover_drill_{drill_passed_count}_of_{required_count}"
             if execution_purpose == "atomic_drill"
-            else "final_cutover_28_of_28"
+            else f"final_cutover_{required_count}_of_{required_count}"
         )
         expected_decision = (
             "GO_FOR_CUTOVER_DRILL_ONLY"
@@ -362,7 +374,9 @@ def create_prepared_plan(
             if execution_purpose == "atomic_drill"
             else []
         )
-        expected_passed = 26 if execution_purpose == "atomic_drill" else 28
+        expected_passed = (
+            drill_passed_count if execution_purpose == "atomic_drill" else required_count
+        )
         final_report = None
         if final_pre_cutover_report is not None:
             raise CutoverError(
@@ -372,7 +386,7 @@ def create_prepared_plan(
         report_document.get("execution_purpose") != expected_report_purpose
         or report_document.get("gate_stage") != expected_stage
         or report_document.get("decision") != expected_decision
-        or report_document.get("required_evidence_count") != 28
+        or report_document.get("required_evidence_count") != required_count
         or report_document.get("passed_evidence_count") != expected_passed
         or report_document.get("excluded_evidence") != expected_excluded
         or not isinstance(report_document.get("release_gate_report"), dict)

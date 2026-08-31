@@ -35,8 +35,7 @@ _REPLAY_START = datetime(2026, 7, 13, tzinfo=_TAIPEI)
 _REPLAY_MINUTES = 7 * 24 * 60
 _ARRIVAL_MULTIPLIER = 10
 _DURATION_MULTIPLIER = 2.0
-_EXPECTED_CRON_JOBS = 104
-_EXPECTED_ENABLED_CRON_JOBS = 94
+_DISPATCH_POLICY_RELATIVE = Path("config/v3_schedule_dispatch_policy.json")
 
 _LIGHT_CLAIM = {
     "memory_mb": 8,
@@ -102,6 +101,43 @@ def bound_cron_jobs(source_root: Path) -> tuple[list[dict[str, Any]], str]:
     if any(not value for value in ids) or len(ids) != len(set(ids)):
         raise OfflineProbeError("cron snapshot contains missing or duplicate ids")
     return [dict(item) for item in payload], digest
+
+
+def bound_dispatch_policy(source_root: Path, cron_sha: str) -> tuple[int, str]:
+    """Load release-bound schedule counts instead of duplicating stale literals."""
+
+    path = source_root / _DISPATCH_POLICY_RELATIVE
+    try:
+        before = path.lstat()
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        after = path.lstat()
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise OfflineProbeError(f"schedule dispatch policy unreadable: {exc}") from exc
+    if path.is_symlink() or not path.is_file():
+        raise OfflineProbeError("schedule dispatch policy must be a regular non-symlink file")
+    signature = lambda value: (
+        value.st_dev,
+        value.st_ino,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_mode,
+    )
+    if signature(before) != signature(after):
+        raise OfflineProbeError("schedule dispatch policy changed while being read")
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema_version") != 1
+        or payload.get("cron_jobs_sha256") != cron_sha
+    ):
+        raise OfflineProbeError("schedule dispatch policy is not bound to the cron snapshot")
+    expected_enabled = payload.get("enabled_jobs_expected")
+    if (
+        not isinstance(expected_enabled, int)
+        or isinstance(expected_enabled, bool)
+        or expected_enabled < 1
+    ):
+        raise OfflineProbeError("schedule dispatch policy enabled count is invalid")
+    return expected_enabled, _sha256(path)
 
 
 def _cron_values(field: str, minimum: int, maximum: int) -> frozenset[int]:
@@ -468,6 +504,7 @@ def _production_duration_replay_certifying(
 def run_schedule_replay(source_root: Path, workdir: Path) -> dict[str, Any]:
     started = time.perf_counter()
     jobs, cron_sha = bound_cron_jobs(source_root)
+    expected_enabled, dispatch_policy_sha = bound_dispatch_policy(source_root, cron_sha)
     profile_id, replay_start = _replay_profile()
     enabled = [job for job in jobs if job.get("enabled") is True]
     calibration = _calibrate_ledger(
@@ -538,6 +575,7 @@ def run_schedule_replay(source_root: Path, workdir: Path) -> dict[str, Any]:
     measurements = {
         "cron_definitions": len(jobs),
         "enabled_cron_definitions": len(enabled),
+        "expected_enabled_cron_definitions": expected_enabled,
         "validation_profile_id": profile_id,
         "replay_start_local": replay_start.isoformat(),
         "base_seven_day_arrivals": len(base_events),
@@ -563,6 +601,7 @@ def run_schedule_replay(source_root: Path, workdir: Path) -> dict[str, Any]:
         "integrity_check_ok": integrity == "ok",
         "reopen_ping_ok": recovered,
         "cron_jobs_sha256": cron_sha,
+        "schedule_dispatch_policy_sha256": dispatch_policy_sha,
         "production_job_duration_replay": {
             "status": "passed" if duration_replay_certifying else "incomplete",
             "completion_claimed": duration_replay_certifying,
@@ -599,8 +638,8 @@ def run_schedule_replay(source_root: Path, workdir: Path) -> dict[str, Any]:
         },
     }
     passed = (
-        len(jobs) == _EXPECTED_CRON_JOBS
-        and len(enabled) == _EXPECTED_ENABLED_CRON_JOBS
+        len(jobs) > 0
+        and len(enabled) == expected_enabled
         and expected == len(base_events) * _ARRIVAL_MULTIPLIER
         and measurements["duplicate_jobs"] == 0
         and measurements["lost_jobs"] == 0
@@ -783,7 +822,16 @@ def _dispatcher_for(
         return WorkerSpec(
             job_id=job.job_id,
             worker_class="light",
-            argv=(sys.executable, "-I", "-S", "-c", code),
+            argv=(
+                sys.executable,
+                "-B",
+                "-X",
+                "pycache_prefix=/dev/null",
+                "-I",
+                "-S",
+                "-c",
+                code,
+            ),
             cwd=workdir,
             estimated_footprint_mb=8,
             timeout_sec=timeout_sec,

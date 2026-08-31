@@ -906,6 +906,7 @@ def _owned_worker_environment(root: Path) -> dict[str, str]:
     return {
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
         "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONPYCACHEPREFIX": "/dev/null",
         "PYTHONHASHSEED": "0",
         "HOME": str(root),
         "TMPDIR": str(root),

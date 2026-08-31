@@ -46,7 +46,12 @@ from api.runtime_paths import (
     get_payment_registry_path,
 )
 from api.case_path_mapper import preferred_case_roots, translate_case_path_to_local
-from skills.engine.legal_web_adapter import format_legal_web_engine_log, resolve_legal_web_engine
+from skills.engine.legal_web_adapter import (
+    format_legal_web_engine_log,
+    legal_web_allowed_hosts,
+    preinstalled_selenium_driver_kwargs,
+    resolve_legal_web_engine,
+)
 from skills.bridge.shared_utils.court_utils import (
     COURT_OPTIONS,
     SIMPLE_COURT_PARENT,
@@ -581,7 +586,6 @@ class LawyerPortalSSO:
             options.add_argument("--window-size=1280,800")
 
         options.add_argument("--disable-gpu")
-        options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-blink-features=AutomationControlled")
         options.add_argument("--disable-infobars")
@@ -625,23 +629,10 @@ class LawyerPortalSSO:
         return options
 
     def _launch_chrome_driver(self, chrome_options, *, pinned_driver: bool = False):
-        if not pinned_driver:
-            return webdriver.Chrome(options=chrome_options)
-
-        if importlib.util.find_spec("webdriver_manager") is not None:
-            from selenium.webdriver.chrome.service import Service
-            from webdriver_manager.chrome import ChromeDriverManager
-
-            forced_version = os.environ.get("MAGI_CHROMEDRIVER_VERSION", "147.0.7727.57").strip()
-            try:
-                service = Service(ChromeDriverManager(driver_version=forced_version).install())
-                return webdriver.Chrome(service=service, options=chrome_options)
-            except Exception as pinned_err:
-                self.log(f"  ⚠️ pinned ChromeDriver {forced_version} 啟動失敗，回退預設版本: {pinned_err}")
-                service = Service(ChromeDriverManager().install())
-                return webdriver.Chrome(service=service, options=chrome_options)
-
-        return webdriver.Chrome(options=chrome_options)
+        return webdriver.Chrome(
+            options=chrome_options,
+            **preinstalled_selenium_driver_kwargs("chrome"),
+        )
     
     def _setup_driver(self):
         """設定 Chrome WebDriver (含反爬蟲措施)"""
@@ -668,6 +659,12 @@ class LawyerPortalSSO:
                 self.driver = _cpw(
                     headless=self.headless, download_dir=dl_path,
                     page_load_timeout=float(os.environ.get("MAGI_SELENIUM_PAGELOAD_TIMEOUT_SEC", "60")),
+                    allowed_navigation_hosts=list(
+                        legal_web_allowed_hosts(
+                            self.web_engine_profile,
+                            extra_urls=(self.LOGIN_URL, getattr(self, "EEFILE_URL", "")),
+                        )
+                    ),
                 )
                 By = _By
                 WebDriverWait = _WDW
@@ -1183,11 +1180,8 @@ class LawyerPortalSSO:
         return ""
     
     def _check_login_success(self) -> bool:
-        """檢查是否登入成功 (支援 Frames)"""
+        """Boundedly wait for the post-login shell and its dynamic frames."""
         try:
-            # 等待載入
-            time.sleep(3)
-            
             # 定義成功特徵 (登入成功後頁面會變成 frameset 包含 mainFrame)
             success_indicators = [
                 "律師您好", 
@@ -1198,6 +1192,17 @@ class LawyerPortalSSO:
                 "SL1A.do",       # mainFrame 的 src
             ]
             
+            try:
+                timeout_seconds = float(
+                    os.environ.get("MAGI_FILE_REVIEW_LOGIN_RESULT_TIMEOUT_SEC", "15") or "15"
+                )
+            except (TypeError, ValueError):
+                timeout_seconds = 15.0
+            timeout_seconds = max(5.0, min(timeout_seconds, 30.0))
+            deadline = time.monotonic() + timeout_seconds
+            scan_logged = False
+            last_frame_count = 0
+
             # Helper: 檢查當前 Frame 是否有特徵
             def check_current_frame():
                 src = self.driver.page_source
@@ -1207,30 +1212,44 @@ class LawyerPortalSSO:
                         return True
                 return False
 
-            # 1. 檢查主頁面
-            self.driver.switch_to.default_content()
-            if check_current_frame():
-                return True
-            
-            # 2. 遍歷所有 Frame/iFrame
-            self.log("  掃描頁面 Frames...")
-            frames = self.driver.find_elements(By.TAG_NAME, "frame")
-            iframes = self.driver.find_elements(By.TAG_NAME, "iframe")
-            all_frames = frames + iframes
-            
-            for i, frame in enumerate(all_frames):
-                try:
-                    self.driver.switch_to.default_content()
-                    self.driver.switch_to.frame(frame)
-                    if check_current_frame():
-                        self.log(f"  ✓ 在 Frame[{i}] 中找到特徵")
-                        self.driver.switch_to.default_content() # 切回主頁面
-                        return True
-                except Exception:
-                    continue
-            
-            self.driver.switch_to.default_content()
-            self.log("  ⚠️ 在主頁面及 Frames 中皆未發現登入特徵")
+            while True:
+                # 1. 檢查主頁面。法院入口會先完成 navigation，再以動態
+                # frameset/iframe 建立 mainFrame；固定 sleep 後只取樣一次會
+                # 把較慢但成功的登入誤報為 sso_login_failed。
+                self.driver.switch_to.default_content()
+                if check_current_frame():
+                    return True
+
+                # 2. 每輪重新取得 frame handles，避免使用 navigation 前的
+                # stale element；bounded deadline 保持 fail-closed。
+                if not scan_logged:
+                    self.log("  掃描頁面 Frames...")
+                    scan_logged = True
+                frames = self.driver.find_elements(By.TAG_NAME, "frame")
+                iframes = self.driver.find_elements(By.TAG_NAME, "iframe")
+                all_frames = frames + iframes
+                last_frame_count = len(all_frames)
+
+                for i, frame in enumerate(all_frames):
+                    try:
+                        self.driver.switch_to.default_content()
+                        self.driver.switch_to.frame(frame)
+                        if check_current_frame():
+                            self.log(f"  ✓ 在 Frame[{i}] 中找到特徵")
+                            self.driver.switch_to.default_content()
+                            return True
+                    except Exception:
+                        continue
+
+                self.driver.switch_to.default_content()
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(0.5)
+
+            self.log(
+                "  ⚠️ 登入結果等待逾時，主頁面及 Frames 中皆未發現登入特徵 "
+                f"(timeout={timeout_seconds:.1f}s, frames={last_frame_count})"
+            )
             return False
             
         except Exception as e:
@@ -7193,13 +7212,29 @@ class FileReviewManager:
 
     def _record_verified_existing_portal_signature(self, signature: str) -> None:
         """Keep every existing-file smart skip tied to its portal row receipt."""
-        if signature:
+        # One portal row can expose multiple buttons.  If any button returns a
+        # cross-case payload, the row is unresolved as a whole; a different
+        # button's smart-skip must not put the same row receipt in both the
+        # handled and mismatch-deferred terminal sets.
+        mismatch = getattr(
+            self, "last_download_mismatch_deferred_signature_hashes", set()
+        )
+        if signature and signature not in mismatch:
             self.last_download_verified_existing_signature_hashes.add(signature)
 
     def _record_mismatch_deferred_portal_signature(self, signature: str) -> None:
         """Bind an active cross-case cooldown to the current anonymous row."""
         if signature:
             self.last_download_mismatch_deferred_signature_hashes.add(signature)
+            # Mismatch is the fail-closed row terminal state and therefore
+            # dominates any valid/existing button observed earlier in the same
+            # row.  Reconciliation can then account for the row exactly once.
+            getattr(
+                self, "last_download_verified_existing_signature_hashes", set()
+            ).discard(signature)
+            getattr(
+                self, "last_download_processed_signature_hashes", set()
+            ).discard(signature)
 
     def check_and_download_available(self, target_case_number: str = None) -> List[str]:
         """

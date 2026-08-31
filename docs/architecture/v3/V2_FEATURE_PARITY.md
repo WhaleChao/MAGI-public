@@ -8,12 +8,17 @@
 
 ```bash
 python3 scripts/architecture/generate_v2_inventory.py \
-  --include-installed-launchagents \
+  --cron-source /path/to/sealed/cron_jobs.json \
   --output docs/architecture/v3/generated/v2_inventory.json
 
 ./venv/bin/python scripts/architecture/capture_v2_runtime_routes.py \
   --output docs/architecture/v3/generated/v2_runtime_routes.json
 ```
+
+此 portable inventory 固定只含 release source；production 已安裝的
+LaunchAgent 由部署前的 rendered manifest 證據另行封存，避免把單一工作站狀態
+混入可重現的 release inventory。V2 不在 active test matrix，此檔只保留既有
+對外介面與資料副作用的相容契約。
 
 V3 CI 必須另外產生自己的 route、operation、schedule 與 service inventory，並逐項連到本文件的 capability id。以下變更未被映射時禁止 release：
 
@@ -100,6 +105,7 @@ V3 CI 必須另外產生自己的 route、operation、schedule 與 service inven
 - 改由 V3 durable scheduler 發 job：`insight-sync`, `laf-nightly-audit`, `nightly-health-report`, `obsidian-ingest`, `pdf-namer-nightly`, `purge-persona-memories`, `reprocess-insights`, `weekend-resummary`, `log-rotate`。
 - 保留為最小 OS 級防護但不得載入 MAGI 重框架：`input-method-watchdog`, `memory-watchdog`。
 - 保留外部入口職責：`paperclip-share-gateway`, `paperclip-share-tunnel`；V3 gateway 通過驗收後可合併，但 URL/權限不變。
+- `memory-watchdog`、選配 `mlx-mtp` 與兩個 Paperclip 服務一律由主機層 `magi-active-release-service.py` 啟動；啟動器先核對 active marker、release manifest 與目標腳本雜湊，切換 release 時再受控重綁。已安裝 plist 不得保存 `/releases/v3-*` 路徑，舊 release 才能在零依賴後安全退役。
 - `menubar` 改讀 V3 query model；顯示目前唯一 active release、維護切換或冷回復狀態，不顯示雙版本 route。
 - `worldmonitor` 維持明確選配／停用狀態；停用不是刪除功能。
 

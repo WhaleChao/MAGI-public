@@ -18,6 +18,64 @@ class ScheduleEvidenceError(ValueError):
     pass
 
 
+def enabled_job_ids_from_cron(payload: Any) -> tuple[str, ...]:
+    """Return the exact enabled-job set from a sealed cron snapshot.
+
+    G11 must be derived from the release-bound schedule input instead of a
+    manually maintained count.  Validate the complete snapshot fail-closed so
+    malformed disabled rows cannot be hidden outside the certifying set.
+    """
+
+    if not isinstance(payload, list) or not payload:
+        raise ScheduleEvidenceError("G11 cron snapshot must be a non-empty JSON list")
+    seen: set[str] = set()
+    enabled: list[str] = []
+    for index, row in enumerate(payload):
+        if not isinstance(row, Mapping):
+            raise ScheduleEvidenceError(f"G11 cron row {index} must be an object")
+        job_id = row.get("id")
+        if not isinstance(job_id, str) or not job_id or job_id.strip() != job_id:
+            raise ScheduleEvidenceError(f"G11 cron row {index} has an invalid job id")
+        if job_id in seen:
+            raise ScheduleEvidenceError(f"G11 cron snapshot duplicates job id: {job_id}")
+        seen.add(job_id)
+        if type(row.get("enabled")) is not bool:
+            raise ScheduleEvidenceError(
+                f"G11 cron row {index} enabled flag must be an exact boolean"
+            )
+        if row["enabled"]:
+            enabled.append(job_id)
+    if not enabled:
+        raise ScheduleEvidenceError("G11 cron snapshot has no enabled jobs")
+    return tuple(sorted(enabled))
+
+
+def _job_ids(rows: Any, description: str) -> tuple[str, ...]:
+    if not isinstance(rows, list):
+        raise ScheduleEvidenceError(f"{description} must be a list")
+    values: list[str] = []
+    for index, row in enumerate(rows):
+        if not isinstance(row, Mapping):
+            raise ScheduleEvidenceError(f"{description} row {index} must be an object")
+        job_id = row.get("job_id")
+        if not isinstance(job_id, str) or not job_id:
+            raise ScheduleEvidenceError(f"{description} row {index} has an invalid job_id")
+        values.append(job_id)
+    if len(values) != len(set(values)):
+        raise ScheduleEvidenceError(f"{description} contains duplicate job ids")
+    return tuple(sorted(values))
+
+
+def _string_ids(values: Any, description: str) -> tuple[str, ...]:
+    if not isinstance(values, list) or any(
+        not isinstance(value, str) or not value for value in values
+    ):
+        raise ScheduleEvidenceError(f"{description} must be a list of non-empty strings")
+    if len(values) != len(set(values)):
+        raise ScheduleEvidenceError(f"{description} contains duplicate job ids")
+    return tuple(sorted(values))
+
+
 def _sha(value: Mapping[str, Any]) -> str:
     return hashlib.sha256(
         json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
@@ -28,6 +86,7 @@ def derive_schedule_gate_metrics(
     reports: Sequence[Mapping[str, Any]],
     body_reports: Sequence[Mapping[str, Any]],
     *,
+    enabled_job_ids: Sequence[str],
     cron_jobs_sha256: str,
     dispatch_policy_sha256: str,
     certifier_sha256: str,
@@ -37,6 +96,20 @@ def derive_schedule_gate_metrics(
     release_id: str,
     release_manifest_sha256: str,
 ) -> dict[str, Any]:
+    if isinstance(enabled_job_ids, (str, bytes)):
+        raise ScheduleEvidenceError("G11 enabled job ids must be a sequence")
+    raw_expected_job_ids = tuple(enabled_job_ids)
+    if (
+        not raw_expected_job_ids
+        or any(
+            not isinstance(job_id, str) or not job_id
+            for job_id in raw_expected_job_ids
+        )
+        or len(raw_expected_job_ids) != len(set(raw_expected_job_ids))
+    ):
+        raise ScheduleEvidenceError("G11 enabled job ids are empty, invalid, or duplicated")
+    expected_job_ids = tuple(sorted(raw_expected_job_ids))
+    expected_job_count = len(expected_job_ids)
     if not reports or len(reports) != len(body_reports):
         raise ScheduleEvidenceError(
             "G11 requires matching non-empty raw schedule and body reports"
@@ -85,6 +158,8 @@ def derive_schedule_gate_metrics(
         body_measurements = body.get("measurements")
         entries = body.get("registry_entries")
         results = body.get("body_results")
+        entry_job_ids = _job_ids(entries, "G11 registry entries")
+        result_job_ids = _job_ids(results, "G11 body results")
         if (
             not isinstance(body_binding, dict)
             or body_binding.get("release_id") != release_id
@@ -95,17 +170,14 @@ def derive_schedule_gate_metrics(
             or not isinstance(body_measurements, dict)
             or body.get("status") != "passed"
             or body.get("completion_claimed") is not True
-            or body_measurements.get("enabled_jobs") != 93
-            or body_measurements.get("safe_adapter_coverage_jobs") != 93
+            or body_measurements.get("enabled_jobs") != expected_job_count
+            or body_measurements.get("safe_adapter_coverage_jobs") != expected_job_count
             or body_measurements.get("blocked_jobs") != 0
-            or body_measurements.get("body_jobs_passed") != 93
+            or body_measurements.get("body_jobs_passed") != expected_job_count
             or body_measurements.get("all_safe_bodies_passed") is not True
-            or not isinstance(entries, list)
-            or len(entries) != 93
+            or entry_job_ids != expected_job_ids
             or any(row.get("classification") != "safe_adapter" or row.get("blockers") != [] for row in entries)
-            or not isinstance(results, list)
-            or len(results) != 93
-            or len({row.get("job_id") for row in results}) != 93
+            or result_job_ids != expected_job_ids
             or any(
                 row.get("status") != "passed"
                 or row.get("semantic_success") is not True
@@ -190,14 +262,16 @@ def derive_schedule_gate_metrics(
             or measurements.get("deadline_misses") != 0
             or measurements.get("global_worker_cap") != 4
             or not isinstance(durations, dict)
-            or durations.get("enabled_jobs") != 93
-            or durations.get("p95_jobs") != 93
+            or durations.get("enabled_jobs") != expected_job_count
+            or durations.get("p95_jobs") != expected_job_count
+            or _string_ids(durations.get("p95_job_ids"), "G11 p95 job ids")
+            != expected_job_ids
             or durations.get("sparse_fallback_jobs") != 0
             or durations.get("missing_jobs") != 0
             or durations.get("certifying_p95_coverage") is not True
             or not isinstance(bodies, dict)
-            or bodies.get("enabled_jobs") != 93
-            or bodies.get("jobs_with_three_successful_real_body_samples") != 93
+            or bodies.get("enabled_jobs") != expected_job_count
+            or bodies.get("jobs_with_three_successful_real_body_samples") != expected_job_count
             or bodies.get("jobs_missing_real_body_adapter") != 0
             or bodies.get("body_adapter_coverage_complete") is not True
             or bodies.get("registry_evidence_sha256") != supplied_body_sha

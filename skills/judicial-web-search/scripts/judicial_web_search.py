@@ -44,7 +44,7 @@ def _launch(headless: bool):
     browser = p.chromium.launch(
         headless=bool(headless),
         executable_path=DEFAULT_CHROME if os.path.exists(DEFAULT_CHROME) else None,
-        args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
+        args=["--disable-blink-features=AutomationControlled"],
     )
     return p, browser
 

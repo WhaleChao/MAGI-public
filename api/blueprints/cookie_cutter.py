@@ -26,19 +26,23 @@ MAX_UPLOAD_BYTES = 8 * 1024 * 1024
 MAX_IMAGE_PIXELS = 4096 * 4096
 MAX_REQUESTS_PER_MINUTE = 6
 MAX_CONCURRENT_PREVIEWS = 2
-MAX_GENERATION_SECONDS = 20
+MAX_GENERATION_SECONDS = 35
 MAX_MULTIPART_OVERHEAD_BYTES = 64 * 1024
 MAX_GENERATION_RSS_BYTES = 384 * 1024 * 1024
 _preview_slots = threading.BoundedSemaphore(MAX_CONCURRENT_PREVIEWS)
 _rate_limiter = DurableRateLimiter(limits={"cookie_cutter": MAX_REQUESTS_PER_MINUTE})
 _COOKIE_ARCHIVE_COMMON_MEMBERS = {
     "cutter.stl",
+    "cutter.obj",
+    "cutter.3mf",
     "segmentation_preview.png",
     "parameters.json",
     "README.txt",
 }
 _COOKIE_ARCHIVE_STAMP_MEMBERS = _COOKIE_ARCHIVE_COMMON_MEMBERS | {
     "stamp_mirrored.stl",
+    "stamp_mirrored.obj",
+    "stamp_mirrored.3mf",
 }
 _RESOURCE_ATTESTATION_KEYS = {
     "generation_seconds",
@@ -409,7 +413,7 @@ def build_cookie_cutter_request(filename: str, content: bytes) -> dict[str, obje
         raise ValueError("圖片尺寸過大，請控制在 4096 × 4096 像素以內")
     line_art = inspect_line_art_bytes(content)
     return {
-        "engine_contract": "magi.cookie-cutter-stl/v1",
+        "engine_contract": "magi.cookie-cutter-model/v2",
         "image_type": image_type,
         "width": width,
         "height": height,
@@ -426,6 +430,24 @@ def build_cookie_cutter_request(filename: str, content: bytes) -> dict[str, obje
 @cookie_cutter_bp.get("/cookie-cutter")
 def cookie_cutter_page():
     response = make_response(render_template("cookie_cutter.html"))
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@cookie_cutter_bp.get("/api/cookie-cutter/health")
+def cookie_cutter_health_api():
+    response = jsonify({
+        "ok": True,
+        "engine_contract": "magi.cookie-cutter-model/v2",
+        "formats": ["stl", "obj", "3mf"],
+        "outline_only_supported": True,
+        "internal_relief_supported": True,
+        "serialized_mesh_revalidated": True,
+        "maximum_contour_error_mm": 0.15,
+        "upload_persisted": False,
+        "network_used": False,
+        "pii_included": False,
+    })
     response.headers["Cache-Control"] = "no-store"
     return response
 
@@ -453,18 +475,22 @@ def cookie_cutter_prepare_api():
 
 def _parameters(form) -> dict[str, float]:
     specs = {
-        "width_mm": (20, 200),
-        "blade_height_mm": (5, 30),
-        "blade_wall_mm": (0.6, 3),
-        "rim_mm": (0, 15),
-        "stamp_base_mm": (1, 10),
-        "relief_mm": (0.4, 12),
-        "clearance_mm": (0, 3),
+        "width_mm": (20, 200, None),
+        "blade_height_mm": (5, 30, None),
+        "blade_wall_mm": (0.6, 3, None),
+        "rim_mm": (0, 15, None),
+        "stamp_base_mm": (1, 10, None),
+        "relief_mm": (0.4, 12, None),
+        "clearance_mm": (0, 3, None),
+        # New v2 controls default safely for older bookmarked clients.
+        "grip_height_mm": (2, 6, 2.8),
+        "relief_width_mm": (0.4, 3, 0.55),
+        "smoothing_mm": (0.05, 0.15, 0.12),
     }
     result: dict[str, float] = {}
-    for key, (low, high) in specs.items():
+    for key, (low, high, default) in specs.items():
         try:
-            value = float(form.get(key, ""))
+            value = float(form.get(key, "" if default is None else default))
         except (TypeError, ValueError) as exc:
             raise ValueError("請填入正確的建模尺寸。") from exc
         if not low <= value <= high:

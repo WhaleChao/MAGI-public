@@ -1599,6 +1599,57 @@ def test_payment_check_notice_stays_quiet_when_portal_probe_is_safely_deferred()
     ) is False
 
 
+def test_portal_pending_state_tracks_case_identity_when_count_is_unchanged():
+    module = _load_action_module()
+    first = {
+        "status": "pending_payment",
+        "rowid": "ROW-A",
+        "court_case_no": "115年度訴字第000374號",
+        "party": "黃泰澄",
+        "pay_deadline": "1150904",
+        "fee": "200",
+    }
+    replacement = {
+        **first,
+        "rowid": "ROW-B",
+        "court_case_no": "115年度訴字第000375號",
+    }
+    first_fp = module._portal_pending_notification_fingerprints([first])
+    replacement_fp = module._portal_pending_notification_fingerprints([replacement])
+
+    assert first_fp != replacement_fp
+    assert module._portal_pending_state_changed(
+        replacement_fp,
+        {"portal_pending": 1, "portal_pending_fingerprints": sorted(first_fp)},
+        current_count=1,
+    ) is True
+
+
+def test_portal_pending_state_migrates_count_only_state_once():
+    module = _load_action_module()
+    item = {
+        "status": "pending_payment",
+        "rowid": "ROW-A",
+        "court_case_no": "115年度訴字第000374號",
+        "party": "黃泰澄",
+        "pay_deadline": "1150904",
+        "fee": "200",
+    }
+    fingerprints = module._portal_pending_notification_fingerprints([item])
+
+    assert module._portal_pending_state_changed(
+        fingerprints,
+        {"portal_pending": 1},
+        current_count=1,
+    ) is True
+    state = {"portal_pending": 1, "portal_pending_fingerprints": sorted(fingerprints)}
+    assert module._portal_pending_state_changed(
+        fingerprints,
+        state,
+        current_count=1,
+    ) is False
+
+
 def test_empty_check_warning_requires_user_visible_warning_text():
     module = _load_action_module()
 
@@ -2109,6 +2160,23 @@ def test_portal_notify_state_can_record_zero_pending_without_notification(tmp_pa
     assert data["portal_downloadable"] == 6
     assert data["portal_court_pickup"] == 29
     assert data["portal_pending"] == 0
+
+
+def test_portal_notify_state_persists_pending_identity_fingerprints(tmp_path):
+    module = _load_action_module()
+    state_path = tmp_path / ".portal_notify_state.json"
+    fingerprints = {"b", "a"}
+
+    module._save_portal_notify_state(
+        str(state_path),
+        portal_downloadable=0,
+        portal_pickup=0,
+        portal_pending=1,
+        portal_pending_fingerprints=fingerprints,
+    )
+
+    data = json.loads(state_path.read_text(encoding="utf-8"))
+    assert data["portal_pending_fingerprints"] == ["a", "b"]
 
 
 def test_recent_activity_fingerprint_ignores_processed_at_for_same_download():
@@ -4141,6 +4209,7 @@ def test_preclick_smart_skip_records_verified_existing_portal_signature():
 
     manager = object.__new__(FileReviewManager)
     manager.last_download_verified_existing_signature_hashes = set()
+    manager.last_download_mismatch_deferred_signature_hashes = set()
 
     manager._record_verified_existing_portal_signature("row-signature-1")
     manager._record_verified_existing_portal_signature("row-signature-1")
@@ -4157,12 +4226,37 @@ def test_cross_case_cooldown_records_separate_anonymous_portal_signature():
     )
 
     manager = object.__new__(FileReviewManager)
+    manager.last_download_processed_signature_hashes = set()
+    manager.last_download_verified_existing_signature_hashes = set()
     manager.last_download_mismatch_deferred_signature_hashes = set()
 
     manager._record_mismatch_deferred_portal_signature("row-signature-1")
     manager._record_mismatch_deferred_portal_signature("row-signature-1")
     manager._record_mismatch_deferred_portal_signature("")
 
+    assert manager.last_download_mismatch_deferred_signature_hashes == {
+        "row-signature-1"
+    }
+
+
+def test_cross_case_mismatch_is_the_exclusive_row_terminal_state():
+    from casper_ecosystem.law_firm_orchestrators.file_review_automation import (
+        FileReviewManager,
+    )
+
+    manager = object.__new__(FileReviewManager)
+    manager.last_download_processed_signature_hashes = {"row-signature-1"}
+    manager.last_download_verified_existing_signature_hashes = {
+        "row-signature-1"
+    }
+    manager.last_download_mismatch_deferred_signature_hashes = set()
+
+    manager._record_mismatch_deferred_portal_signature("row-signature-1")
+    # A later button in the same row must not reverse the fail-closed state.
+    manager._record_verified_existing_portal_signature("row-signature-1")
+
+    assert manager.last_download_processed_signature_hashes == set()
+    assert manager.last_download_verified_existing_signature_hashes == set()
     assert manager.last_download_mismatch_deferred_signature_hashes == {
         "row-signature-1"
     }
@@ -4574,9 +4668,18 @@ def test_recent_payment_activity_does_not_skip_legacy_case_only_proof(tmp_path, 
         "skills.ops.dedup_db",
         types.SimpleNamespace(is_done=lambda *_args, **_kwargs: False),
     )
+    shared = tmp_path / "shared"
+    registries = shared / "file-review" / "downloads"
+    registries.mkdir(parents=True)
+    proof_registry = registries / "payment_proof_registry.json"
+    payment_registry = registries / "payment_registry.json"
+    monkeypatch.setenv("MAGI_V3_SHARED_STATE_DIR", str(shared))
+    monkeypatch.setenv("MAGI_SHARED_STATE_DIR", str(shared))
+    monkeypatch.setenv("MAGI_PAYMENT_PROOF_REGISTRY_PATH", str(proof_registry))
+    monkeypatch.setenv("MAGI_PAYMENT_REGISTRY_PATH", str(payment_registry))
     pdf = tmp_path / "441403005422.pdf"
     pdf.write_bytes(b"%PDF-1.4\n")
-    (tmp_path / "payment_proof_registry.json").write_text(
+    proof_registry.write_text(
         json.dumps(
             {
                 "115.上訴.003543": {
@@ -4589,7 +4692,7 @@ def test_recent_payment_activity_does_not_skip_legacy_case_only_proof(tmp_path, 
         ),
         encoding="utf-8",
     )
-    (tmp_path / "payment_registry.json").write_text(
+    payment_registry.write_text(
         json.dumps(
             {
                 "case:115上訴3543": {

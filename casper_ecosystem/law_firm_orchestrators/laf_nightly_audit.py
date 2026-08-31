@@ -197,8 +197,24 @@ class PortalNewFilesScanResult(list):
 
 # ─── DB Helper ─────────────────────────────────────────────────
 
-def _get_db():
-    """Get DatabaseManager instance."""
+def _db_probe(db, *, require_case_inventory: bool = False) -> bool:
+    """Verify a lazy DatabaseManager before selecting its profile."""
+    row = db.fetch_one("SELECT 1 AS ok", (), as_dict=True)
+    if not isinstance(row, dict) or int(row.get("ok") or 0) != 1:
+        return False
+    if not require_case_inventory:
+        return True
+    row = db.fetch_one("SELECT COUNT(*) AS case_count FROM `cases`", (), as_dict=True)
+    return isinstance(row, dict) and int(row.get("case_count") or 0) > 0
+
+
+def _get_db(*, require_case_inventory: bool = False):
+    """Return the first queryable DB profile, honoring local-first policy.
+
+    ``DatabaseManager`` connects lazily and historically swallowed read errors,
+    so constructing the first configured profile was not evidence that it could
+    serve the LAF case inventory.  Probe every candidate before selecting it.
+    """
     try:
         try:
             from osc import DatabaseManager
@@ -213,23 +229,47 @@ def _get_db():
         with open(config_path, encoding="utf-8") as f:
             config = json.load(f)
 
-        for profile in config.get("mariadb_profiles", []):
-            try:
-                db = DatabaseManager(profile["config"])
-                return db
-            except Exception:
-                continue
-
-        # fallback: local
+        candidates = []
+        local_candidate = None
         try:
             from osc_headless.db import db_config_from_env
             c = db_config_from_env()
-            return DatabaseManager({
+            local_candidate = ("local", {
                 "host": c.host, "port": int(c.port),
                 "user": c.user, "password": c.password, "database": c.database,
             })
         except Exception:
             logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 152, exc_info=True)
+
+        prefer_local = os.environ.get("MAGI_PREFER_LOCAL_DB", "").strip().lower() in {
+            "1", "true", "yes", "on",
+        }
+        if prefer_local and local_candidate:
+            candidates.append(local_candidate)
+        for index, profile in enumerate(config.get("mariadb_profiles", [])):
+            if not isinstance(profile, dict) or not isinstance(profile.get("config"), dict):
+                continue
+            candidates.append((str(profile.get("profile_name") or f"profile-{index + 1}"), profile["config"]))
+        if not prefer_local and local_candidate:
+            candidates.append(local_candidate)
+
+        seen = set()
+        for label, candidate_config in candidates:
+            identity = tuple(
+                str(candidate_config.get(key) or "")
+                for key in ("host", "port", "user", "database")
+            )
+            if identity in seen:
+                continue
+            seen.add(identity)
+            try:
+                db = DatabaseManager(candidate_config)
+                if _db_probe(db, require_case_inventory=require_case_inventory):
+                    logger.info("Selected verified DB profile: %s", label)
+                    return db
+                logger.warning("DB profile %s failed query/inventory probe", label)
+            except Exception as e:
+                logger.warning("DB profile %s probe failed: %s", label, type(e).__name__)
     except Exception as e:
         logger.error("DB connection failed: %s", e)
     return None
@@ -3859,7 +3899,7 @@ def run_portal_new_files_scan(
     auto_download: bool = False,
 ) -> dict:
     """Run the standalone LAF portal file sweep used by the 6-hour cron job."""
-    db = _get_db()
+    db = _get_db(require_case_inventory=True)
     if not db:
         return {
             "ok": False,

@@ -4,10 +4,10 @@
   "purpose": "Release-bound, fail-closed registry for three-sample execution of real scheduled job bodies in disposable fixtures.",
   "release_binding": {
     "cron_jobs_source_path": "cron_jobs.json",
-    "cron_jobs_source_sha256": "8c584cb38cf21a4df5d15b3da47dccbcc43b4d57b1ec20e4bbd7362eaacf539b",
-    "logical_definition_sha256": "dc2a462a21889c352a719797b0d323918311f80ef408c7d4f01cfb578709dca2",
+    "cron_jobs_source_sha256": "707987a4a8689ca1fc3e6a94f77d2f092248eb41a2b9e3a14ab6420946097416",
+    "logical_definition_sha256": "e22a7fcdc0a3ad4aa292eba273c6e1c9dedf9bf7e75ea75db8b784550642aa85",
     "inherited_baseline_path": "config/v3_schedule_realism_baseline.json",
-    "inherited_baseline_sha256": "5c5b21d0a571a73bed1ce5d019fd0a6ee4b79f8c37ed1405bf8bfbdd368a2c00",
+    "inherited_baseline_sha256": "27a86f71c42772587b1ca8283994b06b3759efdef75c34eddafdf57b8cfe0d49",
     "formal_run_requires_release_id": true,
     "formal_run_requires_manifest_sha256": true
   },
@@ -1713,7 +1713,7 @@
         "expected_requests": {
           "FROM case_todos t": 1,
           "UPDATE case_todos": 3,
-          "INSERT INTO case_todos": 1
+          "INSERT INTO case_todos": 2
         },
         "postconditions": [
           {
@@ -1729,7 +1729,7 @@
             "equals": 1
           },
           {
-            "sql": "SELECT COUNT(*) FROM law_firm_data.case_todos WHERE status='pending' AND todo_type='逾期確認'",
+            "sql": "SELECT COUNT(*) FROM law_firm_data.case_todos WHERE status='pending' AND description LIKE '%【MAGI逾期治理：原待辦#%'",
             "equals": 1
           }
         ]
@@ -2251,7 +2251,7 @@
         "path": "runtime/function_health_index_latest.json",
         "equals": {
           "ok": true,
-          "summary.enabled_cron_job_count": 94,
+          "summary.enabled_cron_job_count": 96,
           "summary.test_suite_count": 1,
           "summary.failed_health_count": 0,
           "summary.stale_health_count": 0,
@@ -2329,6 +2329,7 @@
         "MAGI_DISABLE_DOTENV": "1",
         "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime",
         "MAGI_TAILSCALE_BIN": "<FIXTURE>/bin/tailscale",
+        "MAGI_TAILSCALE_FIXTURE_LOCAL_BACKEND": "<FIXTURE>/local-backend-health.json",
         "MAGI_PUBLIC_BASE_URL": "https://fixture.tailnet.example",
         "PATH": "<FIXTURE>/bin:/usr/bin:/bin:/usr/sbin:/sbin"
       },
@@ -3895,6 +3896,33 @@
       },
       "success_contract": {
         "type": "pdf_namer_nightly_fixture"
+      }
+    },
+    {
+      "job_id": "job_commercial_readiness_live",
+      "production_entrypoint": "scripts/ops/commercial_readiness_live.py",
+      "safety_class": "bounded_release_gate_fixture_without_host_service_probes",
+      "fixture_kind": "commercial_readiness_schedule_fixture",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/scripts/ops/commercial_readiness_live.py",
+        "--skip-backup",
+        "--skip-db",
+        "--json-out",
+        "<FIXTURE>/runtime/commercial_readiness_schedule_fixture_latest.json"
+      ],
+      "environment": {
+        "MAGI_ROOT_DIR": "<ROOT>",
+        "MAGI_PUBLIC_SOURCE_ROOT_DIR": "<ROOT>",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime",
+        "MAGI_AGENT_DIR": "<FIXTURE>/agent",
+        "MAGI_METRICS_DIR": "<FIXTURE>/metrics",
+        "MAGI_EXPORTS_DIR": "<FIXTURE>/exports",
+        "MAGI_V3_SCHEDULE_FIXTURE": "1"
+      },
+      "success_contract": {
+        "type": "commercial_readiness_schedule_fixture",
+        "path": "runtime/commercial_readiness_schedule_fixture_latest.json"
       }
     },
     {

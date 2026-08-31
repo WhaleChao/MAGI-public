@@ -224,13 +224,6 @@ def classify_cron_result(
     if timed_out:
         return CronResultClassification(False, "failed", rc, "cron_job_timed_out")
 
-    hard_stderr = any(
-        marker.lower() in clean_stderr.lower()
-        for marker in _HARD_FAILURE_MARKERS
-    )
-    if hard_stderr:
-        return CronResultClassification(False, "failed", rc, clean_stderr[-500:])
-
     structured_status = str((obj or {}).get("status") or "").strip().lower()
     strict_structured_deferred = bool(
         obj is not None
@@ -262,13 +255,23 @@ def classify_cron_result(
         if contract_value is False:
             return CronResultClassification(False, "failed", rc, _contract_error(obj))
         if contract_value is True:
-            # A zero-exit, explicit top-level contract is authoritative.  Many
-            # maintained jobs intentionally log recoverable sub-step errors or
-            # optional-node warnings to stderr before returning ``ok: true``.
-            # Hard interpreter failures remain failures even with stale JSON.
-            if any(marker.lower() in clean_stderr.lower() for marker in _HARD_FAILURE_MARKERS):
-                return CronResultClassification(False, "failed", rc, clean_stderr[-500:])
+            # ``_last_json_object`` accepts only the final complete object, so
+            # a zero-exit, explicit top-level contract is authoritative.  A
+            # maintained batch may catch a per-item exception, log its
+            # traceback to stderr, then encode that item as retry-pending in
+            # this final receipt.  Reclassifying the whole run from the earlier
+            # stderr text exhausts its durable retry and creates a false red
+            # light even though the business receipt is successful.  A real
+            # unhandled interpreter failure still has a non-zero exit or no
+            # final success receipt and is handled below.
             return CronResultClassification(True, "success", rc)
+
+    hard_stderr = any(
+        marker.lower() in clean_stderr.lower()
+        for marker in _HARD_FAILURE_MARKERS
+    )
+    if hard_stderr:
+        return CronResultClassification(False, "failed", rc, clean_stderr[-500:])
 
     if any(marker in clean_stderr for marker in _FAILURE_MARKERS):
         return CronResultClassification(False, "failed", rc, clean_stderr[-500:])

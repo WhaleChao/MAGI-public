@@ -4,15 +4,29 @@ MAGI V3 不是「聊天伺服器加上一堆腳本」，而是一套單一有效
 可驗證且可回滾的作業平台。它統合互動式網頁、排程、隔離工作程序、律師業務、
 文件與影音處理、儲存同步、本機模型、通知及自動復原。
 
-本私有倉庫就是原 MAGI V2 倉庫，已**原地更名為 MAGI-v3**；V2 的 commit、
-branch 與 tag 歷史全部保留。V3 已把舊版多常駐程序、來源樹直接執行、狀態與程式
-混放的結構，改為「不可變 release＋三個正式角色＋明確 owner＋有界 worker＋
-持久化狀態＋雜湊綁定升級」。
+本公開倉庫是經過隱私過濾的 MAGI V3 工程快照。已退役的 V2 歷史只在
+私有工程倉庫保留供稽核與追溯，不是現行 runtime、相容目標或升級驗證矩陣。
+V3 採「不可變 release＋三個正式角色＋明確 owner＋有界 worker＋持久化狀態＋
+雜湊綁定升級」。
 
 > Git 倉庫是工程來源，不是 LIVE runtime。密碼、Cookie、token、案件資料、
 > 資料庫、瀏覽器 profile、mutable queue 與正式收據都不得提交。
 
 English: [README.md](README.md)
+
+## 現行驗證版本
+
+- **公開產品版號：** MAGI RC643／R75（2026-08-31 驗證）。
+- **維修文件版次：** RC643／R75；本分支提供 HTML、PDF、Markdown 與
+  machine-readable 原始碼索引。
+- **線上維修百科：** 登入後開啟 `/manual`；內容由不可變 active release 提供，
+  回應固定為 `private, no-store`。
+- **回滾底線：** 不可變 r59；後續 R75 熱修 package 不改變公開產品版號。
+- **有界 LIVE 觀察：** 業務模組、商用就緒、MAGI Doctor 與 active
+  operational failure 聚合均通過；公開倉庫不包含正式收據或主機路徑。
+
+部署主機的 active marker 與 installed manifest 才是現行精確 package 的唯一權威。
+歷史 RC627–RC641 檔案僅是封存證據，線上維修路由不會選用它們。
 
 ## 目錄
 
@@ -138,6 +152,11 @@ installed release 只能包含 manifest 宣告的 regular files。每檔都有 p
 SHA-256；symlink、special file、未知新增、封存後異動或 source drift 都會被拒絕。
 release 目錄不可拿來寫 queue、cache、log、credential 或業務資料。
 
+主機層 singleton 服務的已安裝啟動設定不得綁死 `releases/v3-*` 版本路徑。
+穩定啟動器會讀取 active marker，先核對 release manifest 與指定腳本 SHA-256，
+再啟動 memory watchdog、選配 MTP 或 Paperclip 服務；因此退役舊 release 時不會
+留下只有重開機或服務重啟後才爆發的隱藏依賴。
+
 ### 可變 runtime
 
 runtime 位於 release 之外，並按 owner 拆分：
@@ -237,7 +256,6 @@ production entrypoint；V3 會拒絕 source/runtime/manifest 混用。
 python3 -m pytest -q tests/test_dashboard_pages_blueprint.py
 python3 -m pytest -q tests/test_web_information_architecture.py
 python3 -m py_compile api/blueprints/dashboard_pages.py
-python3 scripts/privacy_audit.py --strict
 python3 scripts/public_release_audit.py --public-isolation --strict
 git diff --check
 ```
@@ -317,17 +335,20 @@ worker，孤兒必須沿真 worker ancestry 找 canonical MAGI owner，殭屍則
 
 ## 文件入口
 
-- [MAGI V3 維修百科全書 HTML](docs/MAGI_V3_維修百科全書_rc633.html)
-- [MAGI V3 維修百科全書 PDF](docs/MAGI_V3_維修百科全書_rc633.pdf)
-- [可維護 Markdown 原稿](docs/MAGI_V3_維修百科全書_rc633.md)
-- [逐檔／行號／symbol／SHA 原始碼索引](docs/MAGI_V3_原始碼索引_rc633.json)
-- [私版工程索引](docs/MAGI_V3_工程技術手冊_rc632_私版.md)
-- [公版技術手冊](docs/MAGI_V3_技術手冊_rc632_公版.md)
+- [MAGI V3 維修百科全書 HTML](docs/MAGI_V3_維修百科全書_rc643.html)
+- [MAGI V3 維修百科全書 PDF](docs/MAGI_V3_維修百科全書_rc643.pdf)
+- [可維護 Markdown 原稿](docs/MAGI_V3_維修百科全書_rc643.md)
+- [逐檔／行號／symbol／SHA 原始碼索引](docs/MAGI_V3_原始碼索引_rc643.json)
+- [自動產生的實作狀態](docs/architecture/v3/V3_IMPLEMENTATION_STATUS.md)
 - [V3 架構參考](docs/architecture/v3/MAGI_V3_ARCHITECTURE.md)
+- [V3 Agent Gateway（核准 client 的 MCP 介面）](docs/architecture/v3/MAGI_AGENT_GATEWAY.md)
 - [通用自架部署](docs/SELFHOST_DEPLOYMENT.md)
 
 HTML 百科也封裝在 `magi_v3/manual_assets/`，會在 MAGI 導覽列另開分頁。它具有目錄、
 全文搜尋、原始碼連結與日／夜切換，並沿用 MAGI 的本機主題偏好。
+
+RC627–RC641 手冊已移至 `docs/archive/legacy-releases/`，僅保留為移轉歷史；
+它們不是 release asset，線上 `/manual` 永遠不會選用。
 
 ## 公私版邊界
 
