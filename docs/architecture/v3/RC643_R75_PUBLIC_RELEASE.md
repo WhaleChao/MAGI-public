@@ -2,8 +2,12 @@
 
 This branch is a privacy-isolated root snapshot of the public MAGI contracts,
 agent framework, release/validation framework, tests, examples, and
-de-identified architecture documentation corresponding to private source
-commit `ab398a44c99b9e83e6ba5c989312df29cf914006`.
+de-identified architecture documentation corresponding to private
+host-service correction commit
+`bd4cd0ce360d6b5c6daef86f8cedfea2fca9bb26`. The active installed package
+remains bound to source commit
+`a20e603f9c4160d00f6c5703a9c4b898a8433212`; host-owned launcher state is a
+separate deployment-layer contract and does not rewrite the sealed package.
 
 It intentionally excludes production runtime state, case records, credentials,
 browser profiles, real filesystem paths, private legal-service connectors, and

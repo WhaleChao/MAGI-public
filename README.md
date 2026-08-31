@@ -24,8 +24,10 @@ Traditional Chinese: [README.zh-TW.md](README.zh-TW.md)
   [`RC643_R75_PUBLIC_RELEASE.md`](docs/architecture/v3/RC643_R75_PUBLIC_RELEASE.md).
 - **Maintenance record:**
   [`RC643_R75_MAINTENANCE.md`](docs/architecture/v3/RC643_R75_MAINTENANCE.md).
-- **Private verified source baseline:**
-  `ab398a44c99b9e83e6ba5c989312df29cf914006` (digest only).
+- **Active installed package source:** `a20e603f9c4160d00f6c5703a9c4b898a8433212`
+  (digest only).
+- **Private host-service correction source:**
+  `bd4cd0ce360d6b5c6daef86f8cedfea2fca9bb26` (digest only).
 
 Private immutable `hotfixN` suffixes do not alter the public R75 label. This
 public repository is not evidence that a private deployment is live; production

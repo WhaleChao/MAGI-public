@@ -21,8 +21,10 @@ English: [README.md](README.md)
   [`RC643_R75_PUBLIC_RELEASE.md`](docs/architecture/v3/RC643_R75_PUBLIC_RELEASE.md)。
 - **去識別維修紀錄：**
   [`RC643_R75_MAINTENANCE.md`](docs/architecture/v3/RC643_R75_MAINTENANCE.md)。
-- **私有已驗證來源基準：**
-  `ab398a44c99b9e83e6ba5c989312df29cf914006`（僅公開 digest）。
+- **目前 installed package 來源：**
+  `a20e603f9c4160d00f6c5703a9c4b898a8433212`（僅公開 digest）。
+- **私有主機服務根修來源：**
+  `bd4cd0ce360d6b5c6daef86f8cedfea2fca9bb26`（僅公開 digest）。
 
 私有不可變封裝的 `hotfixN` 後綴不會改變公開 R75 版號。本公開倉庫也不能作為
 私有部署已在線的證明；production 身分仍須由該部署自己的 active marker 與簽章

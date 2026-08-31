@@ -1,8 +1,9 @@
 # MAGI RC643/R75 maintenance record
 
-Date: 2026-08-30  
-Public version: RC643/R75  
-Production source commit: `ab398a44c99b9e83e6ba5c989312df29cf914006`
+Date: 2026-08-31
+Public version: RC643/R75
+Production source commit: `a20e603f9c4160d00f6c5703a9c4b898a8433212`
+Host-service correction commit: `bd4cd0ce360d6b5c6daef86f8cedfea2fca9bb26`
 
 This is the de-identified public projection of the private maintenance
 encyclopedia. It contains no case data, credentials, browser profiles,

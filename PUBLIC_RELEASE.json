@@ -1,8 +1,9 @@
 {
   "schema": "magi.public_release.v1",
   "release_id": "v3-20260830-rc643-r75",
-  "source_commit": "ab398a44c99b9e83e6ba5c989312df29cf914006",
-  "maintenance_revision": "rc643-r75-20260830",
+  "source_commit": "bd4cd0ce360d6b5c6daef86f8cedfea2fca9bb26",
+  "production_source_commit": "a20e603f9c4160d00f6c5703a9c4b898a8433212",
+  "maintenance_revision": "rc643-r75-20260831-host-service-debt",
   "published_scope": "public_contracts_agent_framework_release_framework_tests_deidentified_documentation",
   "history_mode": "privacy_isolated_root_snapshot",
   "privacy_audit": {
