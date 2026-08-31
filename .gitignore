@@ -4,7 +4,10 @@ __pycache__/
 *.log
 .DS_Store
 *.plist
+!config/launchagents/com.magi.memory-watchdog.plist
 !config/launchagents/com.magi.mlx-mtp.plist
+!config/launchagents/com.magi.paperclip-share-gateway.plist
+!config/launchagents/com.magi.paperclip-share-tunnel.plist
 *.db
 .env
 .env.*

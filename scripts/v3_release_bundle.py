@@ -97,6 +97,12 @@ REQUIRED_PACKAGE_FILES = (
     "scripts/v3_validation/isolated_live_plan_builder.py",
     "scripts/v3_validation/isolated_live_evidence.py",
     "scripts/v3_validation/schemas/isolated-live-execution-plan.schema.json",
+    "scripts/ops/active_release_service_launcher.py",
+    "scripts/ops/v3_host_singleton_migration.py",
+    "config/launchagents/com.magi.memory-watchdog.plist",
+    "config/launchagents/com.magi.mlx-mtp.plist",
+    "config/launchagents/com.magi.paperclip-share-gateway.plist",
+    "config/launchagents/com.magi.paperclip-share-tunnel.plist",
     # Required by tests/v3 modules that import shared helpers through the
     # ``tests.v3`` package.  Without this marker, an installed third-party
     # ``tests`` package can shadow the sealed candidate's test tree.
@@ -242,6 +248,8 @@ REQUIRED_TEST_TARGETS = (
     "tests/test_v3_laf_dedup_compat.py",
     "tests/test_web_runtime_blueprint.py",
     "tests/test_web_information_architecture.py",
+    "tests/v3/test_active_release_service_launcher.py",
+    "tests/v3/test_host_service_process_identity.py",
     "tests/v3/test_host_singleton_migration.py",
 )
 # Packaging presence and test execution are deliberately separate contracts.
@@ -337,8 +345,6 @@ LOCAL_ONLY_RELEASE_FILES = frozenset(
         "casper_ecosystem/law_firm_orchestrators/osc/__init__.py",
         "config/launchagents/com.magi.omlx-nemotron-parse.plist",
         "config/launchagents/com.magi.osc-folder-helper.plist",
-        "config/launchagents/com.magi.paperclip-share-gateway.plist",
-        "config/launchagents/com.magi.paperclip-share-tunnel.plist",
     }
 )
 ORCHESTRATOR_MUTABLE_FILES = frozenset(

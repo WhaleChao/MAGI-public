@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.magi.paperclip-share-tunnel</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <string>app="${MAGI_APP_ROOT:-$HOME/Library/Application Support/MAGI}"; runtime="$app/runtime/MAGI_v3/shared"; launcher="${MAGI_ACTIVE_SERVICE_LAUNCHER:-$app/bin/magi-active-release-service.py}"; python="${MAGI_ACTIVE_SERVICE_PYTHON:-/usr/bin/python3}"; test -f "$launcher" &amp;&amp; test -x "$python" || exit 78; export MAGI_RUNTIME_DIR="${MAGI_RUNTIME_DIR:-$runtime/runtime}" MAGI_AGENT_DIR="${MAGI_AGENT_DIR:-$runtime/agent}" MAGI_DATA_DIR="${MAGI_DATA_DIR:-$runtime/agent}" MAGI_LOG_DIR="${MAGI_LOG_DIR:-$app/runtime/MAGI_v3/logs/share-tunnel}" MAGI_ENV_FILE="${MAGI_ENV_FILE:-$runtime/external/.env}" MAGI_OSC_FILE_SHARE_PUBLIC_BASE_FILE="${MAGI_OSC_FILE_SHARE_PUBLIC_BASE_FILE:-$runtime/runtime/osc_share_public_base_url.txt}"; exec "$python" "$launcher" paperclip-share-tunnel</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>20</integer>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>LANG</key>
+        <string>en_US.UTF-8</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>MAGI_CLOUDFLARED_PATH</key>
+        <string>/opt/homebrew/bin/cloudflared</string>
+        <key>MAGI_USE_RUNTIME_DIR</key>
+        <string>1</string>
+        <key>PAPERCLIP_SHARE_GATEWAY_PORT</key>
+        <string>5014</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/tmp/magi-paperclip-share-tunnel.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/magi-paperclip-share-tunnel.log</string>
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

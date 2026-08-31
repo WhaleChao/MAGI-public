@@ -152,6 +152,11 @@ installed release 只能包含 manifest 宣告的 regular files。每檔都有 p
 SHA-256；symlink、special file、未知新增、封存後異動或 source drift 都會被拒絕。
 release 目錄不可拿來寫 queue、cache、log、credential 或業務資料。
 
+主機層 singleton 服務的已安裝啟動設定不得綁死 `releases/v3-*` 版本路徑。
+穩定啟動器會讀取 active marker，先核對 release manifest 與指定腳本 SHA-256，
+再啟動 memory watchdog、選配 MTP 或 Paperclip 服務；因此退役舊 release 時不會
+留下只有重開機或服務重啟後才爆發的隱藏依賴。
+
 ### 可變 runtime
 
 runtime 位於 release 之外，並按 owner 拆分：

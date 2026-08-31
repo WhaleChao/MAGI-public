@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.magi.memory-watchdog</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <string>app="${MAGI_APP_ROOT:-$HOME/Library/Application Support/MAGI}"; launcher="${MAGI_ACTIVE_SERVICE_LAUNCHER:-$app/bin/magi-active-release-service.py}"; python="${MAGI_ACTIVE_SERVICE_PYTHON:-/usr/bin/python3}"; test -f "$launcher" &amp;&amp; test -x "$python" || exit 78; exec "$python" "$launcher" memory-watchdog</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>MAGI_USE_RUNTIME_DIR</key>
+        <string>1</string>
+        <key>MAGI_WATCHDOG_KILL_MODE</key>
+        <string>shadow</string>
+        <key>MAGI_WATCHDOG_REAP_STALE_PLAYWRIGHT</key>
+        <string>1</string>
+        <key>MAGI_WATCHDOG_STALE_PLAYWRIGHT_MODE</key>
+        <string>enforce</string>
+        <key>MAGI_WATCHDOG_STALE_PLAYWRIGHT_SEC</key>
+        <string>2700</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/tmp/magi-memory-watchdog.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/magi-memory-watchdog.log</string>
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

@@ -24,20 +24,34 @@ HOST_SINGLETON_LAUNCHD_LABELS = {
     "com.magi.db-proxy": "db_proxy",
     "com.magi.input-method-watchdog": "host_watchdog",
     "com.magi.memory-watchdog": "host_watchdog",
+    "com.magi.mlx-mtp": "model_host_8090",
     "com.magi.omlx": "model_host_8080",
     "com.magi.omlx-embed": "model_host_8081",
     "com.magi.omlx-phi4": "model_host_8082",
     "com.magi.omlx-smol": "model_host_8083",
     "com.magi.omlx-watchdog": "model_host_supervisor",
+    "com.magi.paperclip-share-gateway": "share_gateway",
+    "com.magi.paperclip-share-tunnel": "share_tunnel",
     "com.magi.rpc": "ingress",
     "com.magi.smb-reconnect": "nas_host",
 }
 HOST_SINGLETON_SCRIPT_IDENTITIES = {
-    "scripts/ops/memory_watchdog.py": "release",
-    "scripts/ops/input_method_watchdog.py": "release",
+    "scripts/ops/memory_watchdog.py": "host_watchdog",
+    "scripts/ops/input_method_watchdog.py": "host_watchdog",
+    "scripts/serve_mlx_mtp.py": "model_host_8090",
+    "scripts/share_gateway.py": "share_gateway",
+    "scripts/share_tunnel_supervisor.py": "share_tunnel",
     "bin/omlx_watchdog.sh": "model_host_supervisor",
     "rpc_server.py": "ingress",
 }
+ACTIVE_RELEASE_SERVICE_DOMAINS = {
+    "memory-watchdog": "host_watchdog",
+    "mlx-mtp": "model_host_8090",
+    "paperclip-share-gateway": "share_gateway",
+    "paperclip-share-tunnel": "share_tunnel",
+}
+ACTIVE_RELEASE_SERVICE_LAUNCHER_SUFFIX = Path("bin/magi-active-release-service.py")
+MAGI_APPLICATION_ROOT = Path.home() / "Library" / "Application Support" / "MAGI"
 OMLX_EXECUTABLE_IDENTITIES = frozenset({"/opt/homebrew/bin/omlx", "/opt/homebrew/opt/omlx/bin/omlx"})
 OMLX_INSTANCE_IDENTITIES = {
     "8080": ".omlx",
@@ -162,6 +176,24 @@ def _host_singleton_process_identity(text: str) -> tuple[str, str] | None:
     for executable, domain in HOST_SINGLETON_EXECUTABLE_IDENTITIES.items():
         if text == executable or text.startswith(executable + " "):
             return domain, executable
+    # ``ps ... command`` does not quote paths containing spaces. Match only
+    # exact scripts below MAGI's canonical host/release roots before shlex.
+    launcher = str(MAGI_APPLICATION_ROOT / ACTIVE_RELEASE_SERVICE_LAUNCHER_SUFFIX)
+    for service, domain in ACTIVE_RELEASE_SERVICE_DOMAINS.items():
+        match = re.search(
+            rf"(?<!\S){re.escape(launcher)}\s+{re.escape(service)}(?=\s|$)",
+            text,
+        )
+        if match:
+            return domain, f"{launcher}:{service}"
+    release_prefix = re.escape(str(MAGI_APPLICATION_ROOT / "releases"))
+    for suffix, domain in HOST_SINGLETON_SCRIPT_IDENTITIES.items():
+        match = re.search(
+            rf"(?<!\S)({release_prefix}/v3-[A-Za-z0-9._-]+/{re.escape(suffix)})(?=\s|$)",
+            text,
+        )
+        if match:
+            return domain, match.group(1)
     try:
         argv = shlex.split(text)
     except ValueError:
@@ -169,6 +201,18 @@ def _host_singleton_process_identity(text: str) -> tuple[str, str] | None:
     normalized = [str(Path(token).expanduser()) for token in argv]
     if normalized and normalized[0] in HOST_SINGLETON_EXECUTABLE_IDENTITIES:
         return HOST_SINGLETON_EXECUTABLE_IDENTITIES[normalized[0]], normalized[0]
+    for index, token in enumerate(normalized[:-1]):
+        path = Path(token)
+        if (
+            path.is_absolute()
+            and len(path.parts) >= len(ACTIVE_RELEASE_SERVICE_LAUNCHER_SUFFIX.parts)
+            and path.parts[-len(ACTIVE_RELEASE_SERVICE_LAUNCHER_SUFFIX.parts) :]
+            == ACTIVE_RELEASE_SERVICE_LAUNCHER_SUFFIX.parts
+        ):
+            service = argv[index + 1]
+            domain = ACTIVE_RELEASE_SERVICE_DOMAINS.get(service)
+            if domain:
+                return domain, f"{path}:{service}"
     for token in normalized:
         for suffix, domain in HOST_SINGLETON_SCRIPT_IDENTITIES.items():
             path = Path(token)

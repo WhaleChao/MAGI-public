@@ -162,6 +162,12 @@ has a path, size, mode, and SHA-256. Symlinks, special files, unknown additions,
 source drift, and post-seal mutation are rejected. Release code is never used as
 a queue, cache, log directory, or credential store.
 
+Host-level singleton services never bind their installed launch configuration to
+a versioned `releases/v3-*` directory. A stable host launcher resolves the active
+marker and verifies the release manifest plus the selected script hash before
+starting memory watchdog, optional MTP, or Paperclip services. This lets an old
+release be retired without leaving a hidden restart dependency.
+
 ### Mutable runtime
 
 Runtime state is external to the release and divided by ownership:

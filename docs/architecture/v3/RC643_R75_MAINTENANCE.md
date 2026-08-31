@@ -32,6 +32,21 @@ release, release marker, manifest, production deployment mode, and immutable
 candidate-equivalent identity. Historical evidence remains queryable but
 cannot make the active release red.
 
+### Host singleton services retained an immutable old-release path
+
+Four host-owned services had been left outside the cutover inventory. Their
+installed LaunchAgents could therefore keep a direct path to an older sealed
+release even though the current and rollback scripts were byte-identical. The
+risk was delayed: normal operation could look healthy until a restart after
+that old release was archived.
+
+Memory watchdog, optional MTP, and both Paperclip services now start through a
+stable host launcher. It resolves the active marker, verifies the immutable
+manifest and selected script SHA-256, and rebinds only after a valid cutover.
+Cutover role classification, migration staging, bundle allowlists, portable
+LaunchAgent templates, and process-identity tests cover the contract. Installed
+configuration is rejected if it contains a V2 or `releases/v3-*` dependency.
+
 ## Promotion and LIVE verification
 
 - Final release gate: 14/14 required evidence items passed; no missing,

@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.magi.mlx-mtp</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <string>app="${MAGI_APP_ROOT:-$HOME/Library/Application Support/MAGI}"; launcher="${MAGI_ACTIVE_SERVICE_LAUNCHER:-$app/bin/magi-active-release-service.py}"; python="${MAGI_ACTIVE_SERVICE_PYTHON:-/usr/bin/python3}"; test -f "$launcher" &amp;&amp; test -x "$python" || exit 78; export MAGI_MLX_MTP_MODEL="${MAGI_MLX_MTP_MODEL:-$HOME/.omlx/models/gemma-4-e4b-it-4bit}"; export MAGI_MLX_MTP_DRAFT_MODEL="${MAGI_MLX_MTP_DRAFT_MODEL:-$HOME/.omlx/models/gemma-4-E4B-it-assistant-bf16}"; exec "$python" "$launcher" mlx-mtp</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>MAGI_MLX_MTP_MODEL_ID</key>
+        <string>gemma-4-e4b-it-4bit</string>
+        <key>MAGI_MLX_MTP_DRAFT_MODEL_ID</key>
+        <string>gemma-4-E4B-it-assistant-bf16</string>
+        <key>MAGI_MLX_MTP_DRAFT_KIND</key>
+        <string>mtp</string>
+        <key>MAGI_MLX_MTP_DRAFT_BLOCK_SIZE</key>
+        <string>4</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/tmp/magi-mlx-mtp-sidecar.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/magi-mlx-mtp-sidecar.log</string>
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>
