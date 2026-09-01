@@ -18,15 +18,21 @@ English: [README.md](README.md)
 
 - **公開產品版號：** MAGI RC643／R75（2026-09-01 驗證）。
 - **最新驗證不可變 package：**
-  `v3-20260831-rc643-r75-hotfix7-r1-docs2`；`docs2` 僅是文件稽核後綴，
-  不會改變公開 R75 產品版號。
+  `v3-20260901-rc643-r75-hotfix8-r11`；私有 hotfix／revision 後綴是不變
+  封裝的稽核識別，不會改變公開 R75 產品版號。
 - **維修文件版次：** RC643／R75；本分支提供 HTML、PDF、Markdown 與
   machine-readable 原始碼索引。
 - **線上維修百科：** 登入後開啟 `/manual`；內容由不可變 active release 提供，
   回應固定為 `private, no-store`。
-- **回滾底線：** 不可變 r59；後續 R75 熱修 package 不改變公開產品版號。
-- **有界 LIVE 觀察：** 業務模組、商用就緒、MAGI Doctor 與 active
-  operational failure 聚合均通過；公開倉庫不包含正式收據或主機路徑。
+- **回滾底線：** 不可變 r59；前一個 r10 package 也持續保留。
+- **有界 LIVE 觀察：** 業務模組 20/20、商用就緒 11/11、MAGI Doctor
+  54/54、96 個啟用排程失敗 0，active function health 的
+  failed／stale／missing 均為 0。
+
+r11 強化閱卷單一 owner 狀態，避免旁路唯讀探測延後覆蓋入口成功證據；私有法律
+connector 也已根修法扶草稿在 child frame 顯示成功卻被誤判失敗的問題。公開快照
+只同步隱私安全的框架、契約、測試與去識別文件，不公開私有 connector、個案證據或
+runtime 收據。
 
 部署主機的 active marker 與 installed manifest 才是現行精確 package 的唯一權威。
 歷史 RC627–RC641 檔案僅是封存證據，線上維修路由不會選用它們。

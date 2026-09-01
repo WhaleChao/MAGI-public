@@ -4,6 +4,18 @@ from pathlib import Path
 import pytest
 
 
+def _public_seeded_cron_jobs(tmp_path: Path) -> list[dict]:
+    """Build the public cron contract without requiring a private snapshot."""
+    from scripts.seed_cron_jobs import seed_jobs
+
+    fixture_root = tmp_path / "public-cron-fixture"
+    fixture_root.mkdir()
+    result = seed_jobs(fixture_root, python_path=Path("/fixture/python"))
+
+    assert result["ok"] is True
+    return json.loads((fixture_root / "cron_jobs.json").read_text(encoding="utf-8"))
+
+
 def test_osc_refresh_hard_exit_flushes_before_native_teardown() -> None:
     from scripts.ops import osc_events_refresh
 
@@ -456,11 +468,8 @@ def test_saas_generated_edit_actions_have_dispatch_handlers():
         assert fn in events_js or fn in (root / "static/osc/tabs/saas.js").read_text(encoding="utf-8")
 
 
-def test_high_coverage_event_refresh_is_seeded():
-    from magi_v3.external_inputs import load_bound_cron_jobs
-
-    root = Path(__file__).resolve().parents[1]
-    jobs = list(load_bound_cron_jobs(root, missing_source_default=False).jobs)
+def test_high_coverage_event_refresh_is_seeded(tmp_path):
+    jobs = _public_seeded_cron_jobs(tmp_path)
     job = next(x for x in jobs if x.get("id") == "job_osc_events_refresh")
 
     drive_job = next(x for x in jobs if x.get("id") == "job_drive_case_sync_bidirectional")
@@ -628,11 +637,8 @@ def test_transcript_todo_timeout_does_not_wait_for_uninterruptible_nas_probe(
     assert popen_kwargs[0]["close_fds"] is True
 
 
-def test_laf_condition_draft_has_portal_sized_timeout():
-    from magi_v3.external_inputs import load_bound_cron_jobs
-
-    root = Path(__file__).resolve().parents[1]
-    jobs = list(load_bound_cron_jobs(root, missing_source_default=False).jobs)
+def test_laf_condition_draft_has_portal_sized_timeout(tmp_path):
+    jobs = _public_seeded_cron_jobs(tmp_path)
     job = next(x for x in jobs if x.get("id") == "job_laf_condition_draft")
 
     assert job["timeout_sec"] == 1200

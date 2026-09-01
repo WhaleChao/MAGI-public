@@ -21,16 +21,23 @@ Traditional Chinese: [README.zh-TW.md](README.zh-TW.md)
 
 - **Public product label:** MAGI RC643 / R75 (verified 2026-09-01).
 - **Latest verified immutable package:**
-  `v3-20260831-rc643-r75-hotfix7-r1-docs2`; `docs2` is a documentation-only
-  audit suffix and does not change the public R75 product label.
+  `v3-20260901-rc643-r75-hotfix8-r11`; private hotfix/revision suffixes are
+  immutable audit identities and do not change the public R75 product label.
 - **Maintenance documentation revision:** RC643/R75, with HTML, PDF, Markdown,
   and a machine-readable source index on this branch.
 - **Live manual:** authenticated `/manual`, served from the immutable active
   release with `private, no-store` responses.
-- **Rollback floor:** immutable r59; newer R75 hotfix packages do not change the
-  public product label.
-- **Bounded LIVE observation:** business modules, commercial readiness, model
-  topology, host diagnostics, NAS listing, and external login canary passed.
+- **Rollback floor:** immutable r59; the immediately preceding r10 package is
+  retained as well.
+- **Bounded LIVE observation:** business modules 20/20, commercial readiness
+  11/11, MAGI Doctor 54/54, 96 enabled schedules with 0 failures, and active
+  function-health failures/stale/missing all 0.
+
+r11 hardens single-owner file-review status so a concurrent read-only defer
+cannot replace fresh portal success, and fixes cross-frame LAF draft-success
+validation in the private legal connector. This public snapshot carries only
+the privacy-safe framework, contracts, tests, and de-identified documentation;
+it does not publish private connectors, case evidence, or runtime receipts.
 
 The active marker and installed manifest on the deployment host are the only
 authority for the exact package currently running. Historical RC627–RC641 files

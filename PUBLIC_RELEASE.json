@@ -1,7 +1,9 @@
 {
   "schema": "magi.public_release.v1",
-  "release_id": "v3-20260829-rc643-r59",
-  "source_commit": "efe2b05fc27530fe51854391213de5b6c6813665",
+  "release_id": "v3-20260901-rc643-r75",
+  "source_commit": "331175c1eb1cb7acf7819b080d1073acc8c26564",
+  "verified_private_package": "v3-20260901-rc643-r75-hotfix8-r11",
+  "verified_at": "2026-09-01",
   "published_scope": "public_source_tests_examples_documentation",
   "privacy_audit": {
     "required": true,
