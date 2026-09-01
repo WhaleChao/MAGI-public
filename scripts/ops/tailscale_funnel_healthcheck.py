@@ -208,6 +208,113 @@ def _load_funnel_status() -> dict[str, Any]:
         return {"ok": False, "error": f"invalid funnel status json: {exc}", "raw": res["stdout"]}
 
 
+def _canonical_tailnet_ip(value: Any) -> str:
+    raw = str(value or "").strip().split("/", 1)[0]
+    try:
+        return str(ipaddress.ip_address(raw))
+    except ValueError:
+        return ""
+
+
+def _evaluate_tailnet_member_access(netmap: dict[str, Any]) -> dict[str, Any]:
+    """Attest the compiled member-to-node HTTPS grant without exposing topology."""
+
+    self_node = netmap.get("SelfNode") if isinstance(netmap, dict) else {}
+    self_node = self_node if isinstance(self_node, dict) else {}
+    self_user = str(self_node.get("User") or "").strip()
+    self_ips = {
+        ip
+        for value in self_node.get("Addresses") or []
+        if (ip := _canonical_tailnet_ip(value))
+    }
+    families = {ipaddress.ip_address(value).version for value in self_ips}
+    if not self_user or not self_ips:
+        return {"ok": False, "attested": True, "reason_code": "tailnet_self_identity_missing"}
+    if families != {4, 6}:
+        return {
+            "ok": False,
+            "attested": True,
+            "reason_code": "tailnet_dual_stack_destination_missing",
+            "destination_family_count": len(families),
+        }
+
+    member_sources = set(self_ips)
+    peers = netmap.get("Peers") if isinstance(netmap.get("Peers"), list) else []
+    member_peer_count = 0
+    for peer in peers:
+        if not isinstance(peer, dict) or str(peer.get("User") or "").strip() != self_user:
+            continue
+        member_peer_count += 1
+        member_sources.update(
+            ip
+            for value in peer.get("Addresses") or []
+            if (ip := _canonical_tailnet_ip(value))
+        )
+
+    rules = netmap.get("PacketFilterRules")
+    rules = rules if isinstance(rules, list) else []
+    relevant: list[tuple[set[str], set[tuple[str, int, int]], set[int]]] = []
+    for rule in rules:
+        if not isinstance(rule, dict) or rule.get("CapGrant"):
+            continue
+        destinations: set[tuple[str, int, int]] = set()
+        for item in rule.get("DstPorts") or []:
+            if not isinstance(item, dict):
+                continue
+            ip = _canonical_tailnet_ip(item.get("IP"))
+            ports = item.get("Ports") if isinstance(item.get("Ports"), dict) else {}
+            try:
+                first = int(ports.get("First"))
+                last = int(ports.get("Last"))
+            except (TypeError, ValueError):
+                continue
+            if ip:
+                destinations.add((ip, first, last))
+        if any(ip in self_ips for ip, _first, _last in destinations):
+            sources = {
+                ip
+                for value in rule.get("SrcIPs") or []
+                if (ip := _canonical_tailnet_ip(value))
+            }
+            protocols = {
+                int(value)
+                for value in rule.get("IPProto") or []
+                if isinstance(value, int) or str(value).isdigit()
+            }
+            relevant.append((sources, destinations, protocols))
+
+    expected_destinations = {(value, 443, 443) for value in self_ips}
+    exact = [
+        row
+        for row in relevant
+        if row[0] == member_sources and row[1] == expected_destinations and row[2] == {6}
+    ]
+    ok = len(relevant) == 1 and len(exact) == 1 and member_peer_count > 0
+    return {
+        "ok": ok,
+        "attested": True,
+        "reason_code": "member_https_dual_stack_verified" if ok else "member_https_grant_missing_or_drifted",
+        "destination_family_count": len(families),
+        "member_peer_count": member_peer_count,
+        "member_source_count": len(member_sources),
+        "relevant_rule_count": len(relevant),
+    }
+
+
+def _load_tailnet_member_access() -> dict[str, Any]:
+    ts = _tailscale_bin()
+    if ts == "tailscale" and shutil.which("tailscale") is None:
+        return {"ok": None, "attested": False, "reason_code": "tailscale_cli_unavailable"}
+    result = _run([ts, "debug", "netmap"], timeout=10)
+    if not result.get("ok"):
+        return {"ok": None, "attested": False, "reason_code": "tailnet_netmap_unavailable"}
+    try:
+        payload = json.loads(str(result.get("stdout") or "{}"))
+    except (TypeError, json.JSONDecodeError):
+        return {"ok": None, "attested": False, "reason_code": "tailnet_netmap_invalid"}
+    return _evaluate_tailnet_member_access(payload)
+
+
 def _extract_targets(status: dict[str, Any]) -> list[dict[str, str]]:
     targets: list[dict[str, str]] = []
     web = status.get("Web") if isinstance(status, dict) else {}
@@ -1476,6 +1583,12 @@ def check(apply: bool = False) -> dict[str, Any]:
     """
     payload = _check_host_vantage(apply=apply)
     if payload.get("fixture") is True:
+        payload["tailnet_member_access"] = {
+            "ok": None,
+            "attested": False,
+            "skipped": True,
+            "reason_code": "offline_schedule_fixture",
+        }
         payload["external_canary"] = {
             "ok": None,
             "off_host": False,
@@ -1484,6 +1597,24 @@ def check(apply: bool = False) -> dict[str, Any]:
         }
         payload["availability_claim"] = "offline_contract_fixture_only"
         return payload
+
+    member_access = _load_tailnet_member_access()
+    payload["tailnet_member_access"] = member_access
+    if member_access.get("ok") is False and member_access.get("attested") is True:
+        payload["status"] = "failed"
+        payload["reason"] = "Tailnet members are not granted the exact dual-stack HTTPS path to MAGI"
+        payload["action_required"] = True
+        _append_unique(
+            payload.setdefault("next_actions", []),
+            "Restore the reviewed member grant to this node's IPv4 and IPv6 TCP 443 only; keep Funnel unchanged.",
+        )
+    elif member_access.get("ok") is None and payload.get("status") in {"ok", "recovered"}:
+        payload["status"] = "degraded"
+        payload["reason"] = "public ingress passed, but the Tailnet member HTTPS policy could not be attested"
+        _append_unique(
+            payload.setdefault("next_actions", []),
+            "Verify the local Tailscale netmap and rerun this check; public Funnel evidence does not prove peer access.",
+        )
 
     targets = payload.get("targets") if isinstance(payload.get("targets"), list) else []
     host = ""

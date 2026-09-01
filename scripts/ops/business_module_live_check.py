@@ -1974,9 +1974,28 @@ def _calendar_todo_status_live(max_age_hours: float = CALENDAR_TODO_STATUS_SLA_H
     pdf_scanned = int(pdf_scan.get("scanned") or 0)
     pdf_cache_verified = int(pdf_scan.get("cache_skipped") or 0)
     pdf_verified = min(pdf_targets, pdf_scanned + pdf_cache_verified) if pdf_targets else 0
+    pdf_scan_errors = [str(item) for item in (pdf_scan.get("errors") or [])]
+    bounded_defer_errors = bool(pdf_scan_errors) and all(
+        item.startswith(("budget_exhausted:", "filename_sweep_target_timeout:"))
+        for item in pdf_scan_errors
+    )
+    coverage_deferred_to_governance = bool(
+        pdf_targets
+        and pdf_verified < pdf_targets
+        and pdf_scan_ok
+        and int(pdf_scan.get("error_count") or 0) == 0
+        and int(pdf_scan.get("timeout_count") or 0) == 0
+        and bool(pdf_scan.get("full_text_all_cases_requested"))
+        and not bool(pdf_scan.get("full_corpus_budget_eligible"))
+        and bool(pdf_scan.get("full_corpus_deferred_to_governance"))
+        and (not pdf_scan_errors or bounded_defer_errors)
+    )
     if pdf_targets and pdf_verified < pdf_targets:
-        reasons.append("calendar_pdf_coverage_incomplete")
-        ok = False
+        # A zero-error bounded slice explicitly deferred to the governance
+        # owner is backlog, not a LIVE outage. Unaccounted targets fail closed.
+        if not coverage_deferred_to_governance:
+            reasons.append("calendar_pdf_coverage_incomplete")
+            ok = False
     return {
         "name": "calendar_todo_status_live",
         "ok": ok,
@@ -1999,6 +2018,14 @@ def _calendar_todo_status_live(max_age_hours: float = CALENDAR_TODO_STATUS_SLA_H
             "pdf_cache_verified": pdf_cache_verified,
             "pdf_verified": pdf_verified,
             "pdf_coverage_percent": round((pdf_verified / pdf_targets) * 100, 1) if pdf_targets else 100.0,
+            "pdf_coverage_state": (
+                "deferred_to_governance"
+                if coverage_deferred_to_governance
+                else "complete"
+                if not pdf_targets or pdf_verified >= pdf_targets
+                else "incomplete"
+            ),
+            "pdf_coverage_deferred_to_governance": coverage_deferred_to_governance,
             "pdf_event_candidates": int(pdf_scan.get("event_count") or 0),
             "pdf_scan_errors": int(pdf_scan.get("error_count") or 0),
             "pdf_scan_timeouts": int(pdf_scan.get("timeout_count") or 0),

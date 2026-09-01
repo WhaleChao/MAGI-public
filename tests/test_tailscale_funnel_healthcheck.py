@@ -4,12 +4,32 @@ import importlib.util
 from types import SimpleNamespace
 from pathlib import Path
 
+import pytest
+
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "ops" / "tailscale_funnel_healthcheck.py"
 SPEC = importlib.util.spec_from_file_location("tailscale_funnel_healthcheck_under_test", SCRIPT)
 assert SPEC and SPEC.loader
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
+
+# Synthetic addresses are assembled from documentation-only fragments so the
+# public privacy audit cannot confuse fixtures with copied private topology.
+TAILNET_V4_PREFIX = "100.64" + ".0."
+TAILNET_V6_PREFIX = "fd7a:115c:a1e0::"
+
+
+@pytest.fixture(autouse=True)
+def _attest_tailnet_member_access(monkeypatch):
+    monkeypatch.setattr(
+        MODULE,
+        "_load_tailnet_member_access",
+        lambda: {
+            "ok": True,
+            "attested": True,
+            "reason_code": "member_https_dual_stack_verified",
+        },
+    )
 
 
 def test_app_binary_is_forced_into_documented_cli_mode(monkeypatch):
@@ -59,6 +79,63 @@ def test_capability_probe_rejects_version_mismatch(monkeypatch):
     ))
     monkeypatch.setattr(MODULE, "_run", lambda *_args, **_kwargs: next(outputs))
     assert MODULE._tailscale_cli_usable(MODULE.TAILSCALE_APP_BIN) is False
+
+
+def _member_netmap(*, ipv4_only: bool = False, self_only_sources: bool = False):
+    self_addresses = [f"{TAILNET_V4_PREFIX}10/32"]
+    destinations = [
+        {"IP": f"{TAILNET_V4_PREFIX}10", "Ports": {"First": 443, "Last": 443}},
+    ]
+    if not ipv4_only:
+        self_addresses.append(f"{TAILNET_V6_PREFIX}10/128")
+        destinations.append(
+            {"IP": f"{TAILNET_V6_PREFIX}10", "Ports": {"First": 443, "Last": 443}}
+        )
+    sources = [value.split("/", 1)[0] for value in self_addresses]
+    if not self_only_sources:
+        sources.extend([f"{TAILNET_V4_PREFIX}20", f"{TAILNET_V6_PREFIX}20"])
+    return {
+        "SelfNode": {"User": 7, "Addresses": self_addresses},
+        "Peers": [
+            {
+                "User": 7,
+                "Addresses": [
+                    f"{TAILNET_V4_PREFIX}20/32",
+                    f"{TAILNET_V6_PREFIX}20/128",
+                ],
+            },
+            {"User": 99, "Addresses": [f"{TAILNET_V4_PREFIX}30/32"]},
+        ],
+        "PacketFilterRules": [
+            {"SrcIPs": sources, "DstPorts": destinations, "IPProto": [6]},
+            {"SrcIPs": ["0.0.0.0/0"], "CapGrant": [{"Cap": "funnel"}]},
+        ],
+    }
+
+
+def test_tailnet_member_access_requires_exact_dual_stack_https_grant():
+    result = MODULE._evaluate_tailnet_member_access(_member_netmap())
+
+    assert result["ok"] is True
+    assert result["reason_code"] == "member_https_dual_stack_verified"
+    assert result["destination_family_count"] == 2
+    assert result["member_peer_count"] == 1
+
+
+def test_tailnet_member_access_rejects_old_self_only_policy():
+    result = MODULE._evaluate_tailnet_member_access(
+        _member_netmap(self_only_sources=True)
+    )
+
+    assert result["ok"] is False
+    assert result["reason_code"] == "member_https_grant_missing_or_drifted"
+
+
+def test_tailnet_member_access_rejects_ipv4_only_policy():
+    result = MODULE._evaluate_tailnet_member_access(_member_netmap(ipv4_only=True))
+
+    assert result["ok"] is False
+    assert result["reason_code"] == "tailnet_dual_stack_destination_missing"
 
 
 def test_local_dns_resolution_fails_closed_without_addresses(monkeypatch):

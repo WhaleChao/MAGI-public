@@ -56,7 +56,9 @@ _TODO_DONE_STATUSES = (
     "calendar_deduped",
 )
 _PDF_SCAN_WORKER_RESULT_MARKER = "__MAGI_PDF_SCAN_RESULT__"
+_PDF_SCAN_WORKER_DIRNAME = "pdf_scan_workers"
 _DRIVE_REMEDIATION_WORKER_DIRNAME = "calendar_drive_workers"
+_TRANSCRIPT_TODO_WORKER_DIRNAME = "transcript_todo_workers"
 
 
 class _PdfScanTimeout(TimeoutError):
@@ -370,6 +372,144 @@ def _load_transcript_todo_module():
     return mod
 
 
+def _run_transcript_todo_in_process(args: argparse.Namespace) -> dict[str, Any]:
+    transcript_mod = _load_transcript_todo_module()
+    transcript_limit = max(1, int(getattr(args, "transcript_limit", 120)))
+    transcript_tail_pages = max(1, int(getattr(args, "transcript_tail_pages", 3)))
+    paths = transcript_mod._iter_pdf_targets("", limit=transcript_limit)
+    scan = transcript_mod.scan_targets(paths, tail_pages=transcript_tail_pages)
+    if bool(getattr(args, "dry_run", False)):
+        write = {"dry_run": True, "inserted": 0, "updated": 0, "skipped": 0, "past_skipped": 0}
+    else:
+        write = transcript_mod.apply_high_confidence(scan.get("items") or [])
+    return {
+        "ok": True,
+        "deferred": bool(scan.get("deferred")),
+        "reason": str(scan.get("reason") or "complete"),
+        "scanned": scan.get("scanned", 0),
+        "high_count": scan.get("high_count", 0),
+        "review_count": scan.get("review_count", 0),
+        "past_skipped": scan.get("past_skipped", 0),
+        "implausible_skipped": scan.get("implausible_skipped", 0),
+        "errors_count": scan.get("errors_count", 0),
+        "recovered_count": scan.get("recovered_count", 0),
+        "stale_missing_skipped": scan.get("stale_missing_skipped", 0),
+        "write_result": {
+            "inserted": write.get("inserted", 0),
+            "updated": write.get("updated", 0),
+            "skipped": write.get("skipped", 0),
+            "past_skipped": write.get("past_skipped", 0),
+        },
+        "sample_items": (scan.get("items") or [])[:10],
+        "errors": scan.get("errors", [])[:10],
+    }
+
+
+def _run_transcript_todo_isolated(args: argparse.Namespace, *, timeout_sec: int) -> dict[str, Any]:
+    """Bound NAS-backed transcript discovery with a killable process group."""
+    timeout_sec = max(1, int(timeout_sec))
+    worker_dir = RUNTIME_DIR / _TRANSCRIPT_TODO_WORKER_DIRNAME
+    worker_dir.mkdir(parents=True, exist_ok=True)
+    worker_id = f"{os.getpid()}-{time.time_ns()}"
+    input_path = worker_dir / f"{worker_id}.input.json"
+    result_path = worker_dir / f"{worker_id}.result.json"
+    stderr_path = worker_dir / f"{worker_id}.stderr.log"
+    tmp_input_path = input_path.with_suffix(".input.json.tmp")
+    tmp_input_path.write_text(
+        json.dumps(_json_safe(vars(args)), ensure_ascii=False, sort_keys=True),
+        encoding="utf-8",
+    )
+    tmp_input_path.replace(input_path)
+    cmd = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        "--transcript-todo-worker",
+        "--worker-input",
+        str(input_path),
+        "--worker-output",
+        str(result_path),
+    ]
+    proc: subprocess.Popen[Any] | None = None
+    timed_out = False
+    try:
+        with stderr_path.open("w", encoding="utf-8") as stderr_handle:
+            proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=stderr_handle,
+                env=os.environ.copy(),
+                start_new_session=True,
+                close_fds=True,
+            )
+            deadline = time.monotonic() + timeout_sec
+            while proc.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.25)
+            if proc.poll() is None:
+                timed_out = True
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+                return {
+                    "ok": True,
+                    "deferred": True,
+                    "reason": f"transcript_todo_timeout:{timeout_sec}s",
+                    "timeout_sec": timeout_sec,
+                    "timeout_isolated": True,
+                    "process_group_terminated": True,
+                    "worker_pid": proc.pid,
+                    "worker_stderr_path": str(stderr_path),
+                }
+        if not result_path.exists():
+            return {
+                "ok": False,
+                "error": "transcript_todo_result_missing",
+                "timeout_sec": timeout_sec,
+                "timeout_isolated": True,
+                "worker_returncode": int(proc.returncode if proc and proc.returncode is not None else -1),
+                "worker_stderr_path": str(stderr_path),
+            }
+        result = json.loads(result_path.read_text(encoding="utf-8"))
+        if not isinstance(result, dict):
+            raise TypeError("transcript todo result must be an object")
+        result["timeout_sec"] = timeout_sec
+        result["timeout_isolated"] = True
+        result["worker_returncode"] = int(proc.returncode if proc and proc.returncode is not None else -1)
+        if result.get("ok") and result["worker_returncode"] != 0:
+            result["ok"] = False
+            result["error"] = f"transcript_todo_worker_failed:returncode={result['worker_returncode']}"
+        return result
+    except Exception as exc:
+        if proc is not None and proc.poll() is None:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+        return {
+            "ok": False,
+            "error": f"transcript_todo_worker_failed:{type(exc).__name__}: {str(exc)[:180]}",
+            "timeout_sec": timeout_sec,
+            "timeout_isolated": True,
+            "worker_stderr_path": str(stderr_path),
+        }
+    finally:
+        try:
+            input_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        if result_path.exists():
+            try:
+                result_path.unlink()
+            except Exception:
+                pass
+        if not timed_out and proc is not None and proc.poll() is not None and proc.returncode == 0:
+            try:
+                stderr_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+
 def _active_pdf_todos(
     todos: list[dict[str, Any]],
     *,
@@ -502,6 +642,30 @@ def _complete_historical_todos(
             pass
 
 
+def _full_corpus_requested() -> bool:
+    return (
+        os.environ.get("OSC_PDF_CALENDAR_FULL_TEXT_SCAN", "0").strip().lower()
+        in {"1", "true", "yes", "on"}
+        and os.environ.get("OSC_PDF_CALENDAR_FULL_TEXT_ALL_CASES", "0").strip().lower()
+        in {"1", "true", "yes", "on"}
+    )
+
+
+def _full_corpus_min_budget_sec() -> int:
+    return max(
+        600,
+        int(os.environ.get("OSC_PDF_CALENDAR_FULL_CORPUS_MIN_BUDGET_SEC", "5400") or "5400"),
+    )
+
+
+def _full_corpus_budget_eligible(configured_budget: int, refresh_budget: int) -> bool:
+    """Require every declared enclosing budget to fit a complete corpus run."""
+    if not _full_corpus_requested():
+        return False
+    declared = [value for value in (configured_budget, refresh_budget) if value > 0]
+    return bool(declared) and min(declared) >= _full_corpus_min_budget_sec()
+
+
 def _pdf_scan_worker_timeout_sec(args: argparse.Namespace) -> int:
     """Bound the isolated PDF worker without raising inside native PDF code."""
     configured_budget = max(
@@ -509,19 +673,10 @@ def _pdf_scan_worker_timeout_sec(args: argparse.Namespace) -> int:
         int(os.environ.get("OSC_PDF_CALENDAR_BUDGET_SEC", "360") or "360"),
     )
     refresh_budget = max(0, int(getattr(args, "scan_time_budget_sec", 0) or 0))
-    full_corpus = (
-        os.environ.get("OSC_PDF_CALENDAR_FULL_TEXT_SCAN", "0").strip().lower()
-        in {"1", "true", "yes", "on"}
-        and os.environ.get("OSC_PDF_CALENDAR_FULL_TEXT_ALL_CASES", "0").strip().lower()
-        in {"1", "true", "yes", "on"}
-    )
+    full_corpus = _full_corpus_budget_eligible(configured_budget, refresh_budget)
     if configured_budget and refresh_budget:
-        # The all-case job explicitly grants a larger outer budget.  Taking
-        # min() here silently reduced a 3,600-second complete scan to the
-        # legacy 360-second interactive default and repeatedly timed out while
-        # enumerating the same first folders.  Bounded full-corpus work must
-        # honour the larger explicit allowance; the scheduler remains the
-        # outer hard stop.
+        # Only a governance-sized inner and outer budget may select the full
+        # corpus allowance. Frequent refresh remains incrementally bounded.
         effective_budget = (
             max(configured_budget, refresh_budget)
             if full_corpus
@@ -529,11 +684,7 @@ def _pdf_scan_worker_timeout_sec(args: argparse.Namespace) -> int:
         )
     else:
         effective_budget = configured_budget or refresh_budget or 360
-    # The ordinary two-hour refresh keeps the 360-second default.  A caller
-    # that explicitly grants the daily full-governance budget must be allowed
-    # to finish the entire corpus instead of repeatedly rescanning the first
-    # files forever.  The scheduler still supplies the outer 10,800-second
-    # process deadline, while this isolated worker remains bounded.
+    # The scheduler remains the outer hard stop in both modes.
     return max(30, min(7500, effective_budget + 30))
 
 
@@ -632,44 +783,88 @@ def _run_pdf_calendar_scan_isolated(args: argparse.Namespace) -> dict[str, Any]:
     worker_env["OSC_PDF_CALENDAR_FILE_TIMEOUT_SEC"] = "0"
     payload = json.dumps(_json_safe(vars(args)), ensure_ascii=False, sort_keys=True)
     cmd = [sys.executable, str(Path(__file__).resolve()), "--pdf-scan-worker"]
+    worker_dir = RUNTIME_DIR / _PDF_SCAN_WORKER_DIRNAME
+    worker_dir.mkdir(parents=True, exist_ok=True)
+    worker_id = f"{os.getpid()}-{time.time_ns()}"
+    input_path = worker_dir / f"{worker_id}.input.json"
+    stdout_path = worker_dir / f"{worker_id}.stdout.log"
+    stderr_path = worker_dir / f"{worker_id}.stderr.log"
+    tmp_input_path = input_path.with_suffix(".input.json.tmp")
+    tmp_input_path.write_text(payload, encoding="utf-8")
+    tmp_input_path.replace(input_path)
+    proc: subprocess.Popen[Any] | None = None
     try:
-        proc = subprocess.run(
-            cmd,
-            input=payload,
-            text=True,
-            capture_output=True,
-            check=False,
-            timeout=worker_timeout,
-            env=worker_env,
-        )
-    except subprocess.TimeoutExpired:
-        return {
-            "ok": False,
-            "skipped": True,
-            "error": f"pdf_scan_timeout:{worker_timeout}s",
-            "timeout_isolated": True,
-            "worker_timeout_sec": worker_timeout,
-        }
+        with (
+            input_path.open("r", encoding="utf-8") as input_handle,
+            stdout_path.open("w", encoding="utf-8") as stdout_handle,
+            stderr_path.open("w", encoding="utf-8") as stderr_handle,
+        ):
+            proc = subprocess.Popen(
+                cmd,
+                stdin=input_handle,
+                stdout=stdout_handle,
+                stderr=stderr_handle,
+                text=True,
+                env=worker_env,
+                start_new_session=True,
+                close_fds=True,
+            )
+            deadline = time.monotonic() + worker_timeout
+            while proc.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.25)
+            if proc.poll() is None:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+                return {
+                    "ok": False,
+                    "skipped": True,
+                    "error": f"pdf_scan_timeout:{worker_timeout}s",
+                    "timeout_isolated": True,
+                    "process_group_terminated": True,
+                    "worker_timeout_sec": worker_timeout,
+                    "worker_pid": proc.pid,
+                    "worker_stdout_path": str(stdout_path),
+                    "worker_stderr_path": str(stderr_path),
+                }
     except Exception as exc:
+        if proc is not None and proc.poll() is None:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
         return {
             "ok": False,
             "error": f"pdf_scan_worker_launch_failed:{type(exc).__name__}: {str(exc)[:180]}",
             "timeout_isolated": True,
             "worker_timeout_sec": worker_timeout,
+            "worker_stdout_path": str(stdout_path),
+            "worker_stderr_path": str(stderr_path),
         }
 
+    try:
+        stdout = stdout_path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        stdout = ""
+    try:
+        stderr = stderr_path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        stderr = ""
     marker_payload = ""
-    for line in reversed((proc.stdout or "").splitlines()):
+    for line in reversed(stdout.splitlines()):
         if line.startswith(_PDF_SCAN_WORKER_RESULT_MARKER):
             marker_payload = line[len(_PDF_SCAN_WORKER_RESULT_MARKER) :]
             break
     if not marker_payload:
         return {
             "ok": False,
-            "error": f"pdf_scan_worker_failed:returncode={int(proc.returncode)};result_missing",
+            "error": f"pdf_scan_worker_failed:returncode={int(proc.returncode or 0)};result_missing",
             "timeout_isolated": True,
             "worker_timeout_sec": worker_timeout,
-            "worker_stderr_suppressed": bool(proc.stderr),
+            "worker_stderr_suppressed": bool(stderr),
+            "worker_stdout_path": str(stdout_path),
+            "worker_stderr_path": str(stderr_path),
         }
     try:
         result = json.loads(marker_payload)
@@ -679,7 +874,7 @@ def _run_pdf_calendar_scan_isolated(args: argparse.Namespace) -> dict[str, Any]:
             "error": f"pdf_scan_worker_result_invalid:{type(exc).__name__}",
             "timeout_isolated": True,
             "worker_timeout_sec": worker_timeout,
-            "worker_stderr_suppressed": bool(proc.stderr),
+            "worker_stderr_suppressed": bool(stderr),
         }
     if not isinstance(result, dict):
         return {
@@ -687,16 +882,22 @@ def _run_pdf_calendar_scan_isolated(args: argparse.Namespace) -> dict[str, Any]:
             "error": "pdf_scan_worker_result_invalid:not_object",
             "timeout_isolated": True,
             "worker_timeout_sec": worker_timeout,
-            "worker_stderr_suppressed": bool(proc.stderr),
+            "worker_stderr_suppressed": bool(stderr),
         }
     result["timeout_isolated"] = True
     result["worker_timeout_sec"] = worker_timeout
-    result["worker_returncode"] = int(proc.returncode)
-    if proc.stderr:
+    result["worker_returncode"] = int(proc.returncode or 0)
+    if stderr:
         result["worker_stderr_suppressed"] = True
     if proc.returncode != 0 and result.get("ok"):
         result["ok"] = False
         result["error"] = f"pdf_scan_worker_failed:returncode={int(proc.returncode)}"
+    if proc.returncode == 0:
+        for path in (input_path, stdout_path, stderr_path):
+            try:
+                path.unlink(missing_ok=True)
+            except Exception:
+                pass
     return result
 
 
@@ -707,7 +908,7 @@ def _run_pdf_calendar_scan_in_process(args: argparse.Namespace) -> dict[str, Any
     requested_limit = max(1, int(getattr(args, "pdf_limit", 240)))
     target_limit_env = int(os.environ.get("OSC_EVENTS_REFRESH_PDF_CANDIDATE_LIMIT", "0") or "0")
     full_text_scan = os.environ.get("OSC_PDF_CALENDAR_FULL_TEXT_SCAN", "0").strip().lower() in {"1", "true", "yes", "on"}
-    full_text_all_cases = os.environ.get("OSC_PDF_CALENDAR_FULL_TEXT_ALL_CASES", "0").strip().lower() in {"1", "true", "yes", "on"}
+    full_text_all_cases_requested = os.environ.get("OSC_PDF_CALENDAR_FULL_TEXT_ALL_CASES", "0").strip().lower() in {"1", "true", "yes", "on"}
     full_text_scan_limit = max(1, min(10000, int(os.environ.get("OSC_PDF_CALENDAR_FULL_TEXT_SCAN_LIMIT", "5000") or "5000")))
     limit = max(requested_limit, full_text_scan_limit) if full_text_scan else requested_limit
     target_limit = max(limit, min(target_limit_env, 10000)) if target_limit_env > 0 else limit
@@ -722,6 +923,18 @@ def _run_pdf_calendar_scan_in_process(args: argparse.Namespace) -> dict[str, Any
     filename_sweep_limit = max(1, min(50000, int(os.environ.get("OSC_PDF_CALENDAR_FILENAME_SWEEP_LIMIT", "50000") or "50000")))
     file_timeout_sec = max(0, int(os.environ.get("OSC_PDF_CALENDAR_FILE_TIMEOUT_SEC", "12") or "12"))
     budget_sec = max(0, int(os.environ.get("OSC_PDF_CALENDAR_BUDGET_SEC", "360") or "360"))
+    outer_budget = max(0, int(getattr(args, "scan_time_budget_sec", 0) or 0))
+    full_text_all_cases = bool(
+        full_text_scan
+        and full_text_all_cases_requested
+        and _full_corpus_budget_eligible(budget_sec, outer_budget)
+    )
+    if outer_budget:
+        budget_sec = (
+            max(budget_sec, outer_budget)
+            if full_text_scan and full_text_all_cases
+            else min(budget_sec, outer_budget)
+        )
     outer_budget = max(0, int(getattr(args, "scan_time_budget_sec", 0) or 0))
     if outer_budget:
         budget_sec = (
@@ -1150,7 +1363,13 @@ def _run_pdf_calendar_scan_in_process(args: argparse.Namespace) -> dict[str, Any
         "requested_limit": requested_limit,
         "candidate_limit": target_limit,
         "full_text_scan": full_text_scan,
+        "full_text_all_cases_requested": full_text_all_cases_requested,
         "full_text_all_cases": full_text_all_cases,
+        "full_corpus_budget_eligible": full_text_all_cases,
+        "full_corpus_min_budget_sec": _full_corpus_min_budget_sec(),
+        "full_corpus_deferred_to_governance": bool(
+            full_text_scan and full_text_all_cases_requested and not full_text_all_cases
+        ),
         "full_text_scan_limit": full_text_scan_limit,
         "max_pages": max_pages,
         "scan_text": scan_text,
@@ -1957,38 +2176,7 @@ def _run_refresh_locked(args: argparse.Namespace) -> dict[str, Any]:
                 }
             if remaining is not None:
                 transcript_timeout = max(1, min(transcript_timeout, remaining))
-            transcript_mod = _load_transcript_todo_module()
-            transcript_limit = max(1, int(getattr(args, "transcript_limit", 120)))
-            transcript_tail_pages = max(1, int(getattr(args, "transcript_tail_pages", 3)))
-            with _pdf_scan_time_limit(transcript_timeout):
-                paths = transcript_mod._iter_pdf_targets("", limit=transcript_limit)
-                scan = transcript_mod.scan_targets(paths, tail_pages=transcript_tail_pages)
-                if bool(getattr(args, "dry_run", False)):
-                    write = {"dry_run": True, "inserted": 0, "updated": 0, "skipped": 0, "past_skipped": 0}
-                else:
-                    write = transcript_mod.apply_high_confidence(scan.get("items") or [])
-            return {
-                "ok": True,
-                "deferred": bool(scan.get("deferred")),
-                "reason": str(scan.get("reason") or "complete"),
-                "timeout_sec": transcript_timeout,
-                "scanned": scan.get("scanned", 0),
-                "high_count": scan.get("high_count", 0),
-                "review_count": scan.get("review_count", 0),
-                "past_skipped": scan.get("past_skipped", 0),
-                "implausible_skipped": scan.get("implausible_skipped", 0),
-                "errors_count": scan.get("errors_count", 0),
-                "recovered_count": scan.get("recovered_count", 0),
-                "stale_missing_skipped": scan.get("stale_missing_skipped", 0),
-                "write_result": {
-                    "inserted": write.get("inserted", 0),
-                    "updated": write.get("updated", 0),
-                    "skipped": write.get("skipped", 0),
-                    "past_skipped": write.get("past_skipped", 0),
-                },
-                "sample_items": (scan.get("items") or [])[:10],
-                "errors": scan.get("errors", [])[:10],
-            }
+            return _run_transcript_todo_isolated(args, timeout_sec=transcript_timeout)
         except _PdfScanTimeout as exc:
             result["warnings"].append("transcript_todo_timeout")
             return {"ok": False, "skipped": True, "error": str(exc)}
@@ -2329,6 +2517,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--legacy-scan", action="store_true", default=os.environ.get("OSC_EVENTS_REFRESH_LEGACY_SCAN", "0") == "1")
     parser.add_argument("--pdf-scan-worker", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--drive-remediation-worker", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--transcript-todo-worker", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--worker-input", default="", help=argparse.SUPPRESS)
     parser.add_argument("--worker-output", default="", help=argparse.SUPPRESS)
     return parser.parse_args(argv)
@@ -2366,6 +2555,30 @@ def main(argv: list[str] | None = None) -> int:
             result = {
                 "ok": False,
                 "error": f"drive_remediation_worker_exception:{type(exc).__name__}: {str(exc)[:180]}",
+            }
+        try:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_output_path = output_path.with_suffix(output_path.suffix + ".tmp")
+            tmp_output_path.write_text(
+                json.dumps(_json_safe(result), ensure_ascii=False, sort_keys=True),
+                encoding="utf-8",
+            )
+            tmp_output_path.replace(output_path)
+        except Exception:
+            return 2
+        return 0 if result.get("ok") else 1
+    if args.transcript_todo_worker:
+        output_path = Path(str(args.worker_output or "")).expanduser()
+        try:
+            input_path = Path(str(args.worker_input or "")).expanduser()
+            payload = json.loads(input_path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                raise TypeError("worker payload must be an object")
+            result = _run_transcript_todo_in_process(argparse.Namespace(**payload))
+        except Exception as exc:
+            result = {
+                "ok": False,
+                "error": f"transcript_todo_worker_exception:{type(exc).__name__}: {str(exc)[:180]}",
             }
         try:
             output_path.parent.mkdir(parents=True, exist_ok=True)

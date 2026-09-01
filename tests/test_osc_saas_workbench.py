@@ -508,11 +508,17 @@ def test_high_coverage_event_refresh_is_seeded():
 
 
 def test_full_calendar_governance_gets_a_distinct_complete_scan_budget():
-    from magi_v3.external_inputs import load_bound_cron_jobs
+    from magi_v3.external_inputs import ExternalInputError, load_bound_cron_jobs
+    from scripts.seed_cron_jobs import business_jobs
     from scripts.ops.osc_events_refresh import _pdf_scan_worker_timeout_sec, parse_args
 
     root = Path(__file__).resolve().parents[1]
-    jobs = list(load_bound_cron_jobs(root, missing_source_default=False).jobs)
+    try:
+        jobs = list(load_bound_cron_jobs(root, missing_source_default=False).jobs)
+    except ExternalInputError:
+        # Public source checkouts intentionally do not publish a private
+        # runtime cron snapshot. Validate the authoritative generator instead.
+        jobs = business_jobs(root)
     job = next(x for x in jobs if x.get("id") == "job_osc_todo_governance")
     assert "OSC_PDF_CALENDAR_BUDGET_SEC=7200" in job["command"]
     assert "OSC_PDF_CALENDAR_TARGET_TIMEOUT_SEC=180" in job["command"]
@@ -524,15 +530,102 @@ def test_full_calendar_governance_gets_a_distinct_complete_scan_budget():
         assert _pdf_scan_worker_timeout_sec(args) == 7230
 
 
-def test_full_text_all_cases_honours_larger_explicit_refresh_budget():
-    from scripts.ops.osc_events_refresh import _pdf_scan_worker_timeout_sec, parse_args
+def test_frequent_refresh_defers_full_corpus_without_governance_budget():
+    from scripts.ops.osc_events_refresh import (
+        _full_corpus_budget_eligible,
+        _pdf_scan_worker_timeout_sec,
+        parse_args,
+    )
 
     args = parse_args(["--scan-time-budget-sec", "3600"])
     with pytest.MonkeyPatch.context() as patch:
         patch.setenv("OSC_PDF_CALENDAR_BUDGET_SEC", "360")
         patch.setenv("OSC_PDF_CALENDAR_FULL_TEXT_SCAN", "1")
         patch.setenv("OSC_PDF_CALENDAR_FULL_TEXT_ALL_CASES", "1")
-        assert _pdf_scan_worker_timeout_sec(args) == 3630
+        assert _full_corpus_budget_eligible(360, 3600) is False
+        assert _pdf_scan_worker_timeout_sec(args) == 390
+
+
+def test_pdf_calendar_scan_timeout_does_not_wait_for_uninterruptible_worker(
+    tmp_path, monkeypatch
+):
+    from scripts.ops import osc_events_refresh
+
+    class StuckWorker:
+        pid = 65432
+        returncode = None
+
+        def poll(self):
+            return None
+
+    popen_kwargs: list[dict] = []
+    killed: list[tuple[int, int]] = []
+    ticks = iter((0.0, 0.0, 6.0))
+
+    def _popen(*_args, **kwargs):
+        popen_kwargs.append(kwargs)
+        return StuckWorker()
+
+    monkeypatch.setattr(osc_events_refresh, "RUNTIME_DIR", tmp_path)
+    monkeypatch.setattr(osc_events_refresh, "_pdf_scan_worker_timeout_sec", lambda _args: 5)
+    monkeypatch.setattr(osc_events_refresh.subprocess, "Popen", _popen)
+    monkeypatch.setattr(osc_events_refresh.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(osc_events_refresh.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(osc_events_refresh.os, "killpg", lambda pid, sig: killed.append((pid, sig)))
+
+    result = osc_events_refresh._run_pdf_calendar_scan_isolated(
+        osc_events_refresh.parse_args([])
+    )
+
+    assert result["ok"] is False
+    assert result["error"] == "pdf_scan_timeout:5s"
+    assert result["timeout_isolated"] is True
+    assert result["process_group_terminated"] is True
+    assert result["worker_pid"] == 65432
+    assert killed == [(65432, osc_events_refresh.signal.SIGKILL)]
+    assert popen_kwargs[0]["start_new_session"] is True
+    assert popen_kwargs[0]["close_fds"] is True
+
+
+def test_transcript_todo_timeout_does_not_wait_for_uninterruptible_nas_probe(
+    tmp_path, monkeypatch
+):
+    from scripts.ops import osc_events_refresh
+
+    class StuckWorker:
+        pid = 76543
+        returncode = None
+
+        def poll(self):
+            return None
+
+    popen_kwargs: list[dict] = []
+    killed: list[tuple[int, int]] = []
+    ticks = iter((0.0, 0.0, 6.0))
+
+    def _popen(*_args, **kwargs):
+        popen_kwargs.append(kwargs)
+        return StuckWorker()
+
+    monkeypatch.setattr(osc_events_refresh, "RUNTIME_DIR", tmp_path)
+    monkeypatch.setattr(osc_events_refresh.subprocess, "Popen", _popen)
+    monkeypatch.setattr(osc_events_refresh.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(osc_events_refresh.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(osc_events_refresh.os, "killpg", lambda pid, sig: killed.append((pid, sig)))
+
+    result = osc_events_refresh._run_transcript_todo_isolated(
+        osc_events_refresh.parse_args([]), timeout_sec=5
+    )
+
+    assert result["ok"] is True
+    assert result["deferred"] is True
+    assert result["reason"] == "transcript_todo_timeout:5s"
+    assert result["timeout_isolated"] is True
+    assert result["process_group_terminated"] is True
+    assert result["worker_pid"] == 76543
+    assert killed == [(76543, osc_events_refresh.signal.SIGKILL)]
+    assert popen_kwargs[0]["start_new_session"] is True
+    assert popen_kwargs[0]["close_fds"] is True
 
 
 def test_laf_condition_draft_has_portal_sized_timeout():

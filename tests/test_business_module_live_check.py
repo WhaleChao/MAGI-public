@@ -2173,6 +2173,85 @@ def test_calendar_todo_status_fails_closed_on_unaccounted_targets(tmp_path, monk
     assert result["parsed"]["pdf_verified"] == 99
 
 
+def test_calendar_todo_status_accepts_zero_error_bounded_scan_deferred_to_governance(
+    tmp_path, monkeypatch
+):
+    runtime = tmp_path / ".runtime"
+    runtime.mkdir()
+    (runtime / "osc_events_refresh_latest.json").write_text(
+        json.dumps(
+            {
+                "calendar_audit": {"ok": True},
+                "calendar_import": {"ok": True},
+                "calendar_push": {"ok": True, "failed": 0},
+                "calendar_source_audit": {"ok": True},
+                "pdf_calendar_scan": {
+                    "ok": True,
+                    "targets": 497,
+                    "scanned": 235,
+                    "cache_skipped": 41,
+                    "error_count": 0,
+                    "timeout_count": 0,
+                    "errors": ["budget_exhausted:360s"],
+                    "full_text_all_cases_requested": True,
+                    "full_corpus_budget_eligible": False,
+                    "full_corpus_deferred_to_governance": True,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(live_check, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(live_check, "_age_seconds", lambda _path: 60)
+
+    result = live_check._calendar_todo_status_live()
+
+    assert result["ok"] is True
+    assert result["parsed"]["reason"] == ""
+    assert result["parsed"]["pdf_coverage_state"] == "deferred_to_governance"
+
+
+def test_calendar_todo_status_accepts_isolated_filename_sweep_timeout_as_governance_backlog(
+    tmp_path, monkeypatch
+):
+    runtime = tmp_path / ".runtime"
+    runtime.mkdir()
+    (runtime / "osc_events_refresh_latest.json").write_text(
+        json.dumps(
+            {
+                "calendar_audit": {"ok": True},
+                "calendar_import": {"ok": True},
+                "calendar_push": {"ok": True, "failed": 0},
+                "calendar_source_audit": {"ok": True},
+                "pdf_calendar_scan": {
+                    "ok": True,
+                    "targets": 31,
+                    "scanned": 4,
+                    "cache_skipped": 11,
+                    "error_count": 0,
+                    "timeout_count": 0,
+                    "errors": [
+                        "filename_sweep_target_timeout:pdf_scan_timeout:180s",
+                        "budget_exhausted:360s",
+                    ],
+                    "full_text_all_cases_requested": True,
+                    "full_corpus_budget_eligible": False,
+                    "full_corpus_deferred_to_governance": True,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(live_check, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(live_check, "_age_seconds", lambda _path: 60)
+
+    result = live_check._calendar_todo_status_live()
+
+    assert result["ok"] is True
+    assert result["parsed"]["reason"] == ""
+    assert result["parsed"]["pdf_coverage_state"] == "deferred_to_governance"
+
+
 def test_file_review_coverage_rejects_unverified_status_semantics(tmp_path, monkeypatch):
     static = tmp_path / "static"
     static.mkdir()
